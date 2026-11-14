@@ -1,0 +1,80 @@
+# Builds openDAW (TypeScript + Rust/WASM engine) and publishes it to Cloudflare Pages.
+# Needs two repository secrets (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID) and, optionally,
+# a repository variable CLOUDFLARE_PROJECT_NAME (default: opendaw-phone). See PHONE-SETUP.md.
+name: Deploy phone fork to Cloudflare Pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-phone
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PROJECT_NAME: ${{ vars.CLOUDFLARE_PROJECT_NAME || 'opendaw-phone' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust, wasm target and binaryen (same recipe as the upstream deploy workflow)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          . "$HOME/.cargo/env"
+          rustup target add wasm32-unknown-unknown
+          rustup toolchain install nightly --profile minimal --component rust-src
+          rustup target add wasm32-unknown-unknown --toolchain nightly
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          sudo apt-get update && sudo apt-get install -y binaryen
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Placeholder sponsors file (the upstream one needs the author's GitHub token)
+        run: |
+          mkdir -p packages/app/studio/public
+          echo '{"fetchedAt":"1970-01-01T00:00:00.000Z","totalCount":0,"sponsors":[]}' > packages/app/studio/public/sponsors.json
+
+      - name: Build
+        env:
+          DEPLOY_BASE: /
+          VITE_ALLOW_MOBILE: "true"
+        run: npm run build
+
+      - name: Stamp the service worker with the build id
+        run: |
+          UUID=$(node -p "require('./packages/app/studio/public/build-info.json').uuid")
+          sed -i "s/__BUILD__/${UUID}/" packages/app/studio/dist/sw.js
+          grep -n "const BUILD" packages/app/studio/dist/sw.js
+
+      - name: Drop files above the Cloudflare Pages limit (25 MiB each)
+        run: |
+          find packages/app/studio/dist -type f -size +24M -print -delete | tee /tmp/dropped.txt
+          if [ -s /tmp/dropped.txt ]; then echo "::warning::Files above the Pages limit were removed (see log)"; fi
+
+      - name: Create the Pages project (no-op if it already exists)
+        uses: cloudflare/wrangler-action@v3
+        continue-on-error: true
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages project create ${{ env.PROJECT_NAME }} --production-branch=main
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy packages/app/studio/dist --project-name=${{ env.PROJECT_NAME }} --branch=main --commit-dirty=true

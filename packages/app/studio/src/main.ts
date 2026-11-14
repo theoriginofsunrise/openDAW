@@ -10,12 +10,23 @@ import {DisplayPaint} from "@/ui/devices/DisplayPaint"
 import {Browser, Html} from "@opendaw/lib-dom"
 import {mountMobileContestPage} from "@/ui/pages/contest/MobileContestPage"
 
+// Phone fork: set VITE_ALLOW_MOBILE=true at build time to skip the "does not run on your phone" page.
+const allowMobile: boolean = import.meta.env.VITE_ALLOW_MOBILE === "true"
+
+// Phone fork: installable PWA with an offline app shell (see public/sw.js).
+const registerServiceWorker = (): void => {
+    if (!import.meta.env.PROD || !("serviceWorker" in navigator)) {return}
+    const base = import.meta.env.BASE_URL
+    navigator.serviceWorker.register(`${base}sw.js`, {scope: base})
+        .catch(error => console.warn("Service worker registration failed", error))
+}
+
 initializeColors(document.documentElement)
 DisplayPaint.initialize(document.documentElement)
 const mobileContest = /^\/contests\/([^/]+)\/?$/.exec(location.pathname)
 if (Browser.isMobile() && mobileContest !== null) {
     mountMobileContestPage(document.body, mobileContest[1])
-} else if (Browser.isMobile()) {
+} else if (Browser.isMobile() && !allowMobile) {
     const className = Html.adoptStyleSheet(mobileCss, "Mobile")
     document.body.innerHTML = `<div class="${className}">
         <div>
@@ -33,6 +44,7 @@ if (Browser.isMobile() && mobileContest !== null) {
         </div>
     </div>`
 } else if (window.crossOriginIsolated) {
+    registerServiceWorker()
     const now = Date.now()
     boot({
         workersUrl,
