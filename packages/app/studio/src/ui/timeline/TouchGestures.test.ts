@@ -1,102 +1,102 @@
 import {describe, expect, it} from "vitest"
-import {pinchInterval, TouchTracker} from "./TouchGestures"
+import {pinchInterval, TouchPoint, TwoFingerGesture} from "./TouchGestures"
 
-describe("TouchTracker", () => {
-    it("leaves a single finger alone", () => {
-        const tracker = new TouchTracker()
-        expect(tracker.down(1, 100, 100)).toBe("single")
-        expect(tracker.gesturing).toBe(false)
-        expect(tracker.move(1, 120, 100)).toBeNull()
+const finger = (id: number, x: number, y: number): TouchPoint => ({id, x, y})
+
+describe("TwoFingerGesture", () => {
+    it("ignores zero or one finger", () => {
+        const gesture = new TwoFingerGesture()
+        expect(gesture.update([]).kind).toBe("idle")
+        expect(gesture.update([finger(1, 100, 100)]).kind).toBe("idle")
+        expect(gesture.active).toBe(false)
     })
 
-    it("starts a gesture when the second finger lands, paired with the first", () => {
-        const tracker = new TouchTracker()
-        tracker.down(1, 100, 100)
-        expect(tracker.down(2, 200, 100)).toBe("gesture-start")
-        expect(tracker.gesturing).toBe(true)
-        expect(tracker.pair).toEqual([1, 2])
-        expect(tracker.center).toEqual({x: 150, y: 100})
+    it("starts when the second finger lands", () => {
+        const gesture = new TwoFingerGesture()
+        gesture.update([finger(1, 100, 100)])
+        const step = gesture.update([finger(1, 100, 100), finger(2, 200, 100)])
+        expect(step).toEqual({kind: "start", center: {x: 150, y: 100}})
+        expect(gesture.active).toBe(true)
     })
 
     it("reports scale from the finger distance at the start", () => {
-        const tracker = new TouchTracker()
-        tracker.down(1, 100, 100)
-        tracker.down(2, 200, 100)
-        const update = tracker.move(2, 300, 100)
-        expect(update?.scale).toBeCloseTo(2.0) // 100px apart -> 200px apart
-        const pinchedIn = tracker.move(2, 150, 100)
-        expect(pinchedIn?.scale).toBeCloseTo(0.5)
+        const gesture = new TwoFingerGesture()
+        gesture.update([finger(1, 100, 100), finger(2, 200, 100)])
+        const spread = gesture.update([finger(1, 100, 100), finger(2, 300, 100)])
+        expect(spread.kind === "move" && spread.update.scale).toBeCloseTo(2.0)
+        const pinched = gesture.update([finger(1, 100, 100), finger(2, 150, 100)])
+        expect(pinched.kind === "move" && pinched.update.scale).toBeCloseTo(0.5)
     })
 
     it("reports the midpoint travel as incremental deltas", () => {
-        const tracker = new TouchTracker()
-        tracker.down(1, 100, 100)
-        tracker.down(2, 200, 100)
-        const first = tracker.move(1, 110, 90)
-        expect(first?.delta).toEqual({x: 5, y: -5})
-        const second = tracker.move(2, 210, 80)
-        expect(second?.delta).toEqual({x: 5, y: -10}) // finger 2 moved up 20, the midpoint 10
-        expect(second?.center).toEqual({x: 160, y: 85})
+        const gesture = new TwoFingerGesture()
+        gesture.update([finger(1, 100, 100), finger(2, 200, 100)])
+        const first = gesture.update([finger(1, 110, 90), finger(2, 200, 100)])
+        expect(first.kind === "move" && first.update.delta).toEqual({x: 5, y: -5})
+        const second = gesture.update([finger(1, 110, 90), finger(2, 210, 80)])
+        expect(second.kind === "move" && second.update.delta).toEqual({x: 5, y: -10})
+        expect(second.kind === "move" && second.update.center).toEqual({x: 160, y: 85})
     })
 
-    it("swallows a third finger without disturbing the gesture", () => {
-        const tracker = new TouchTracker()
-        tracker.down(1, 0, 0)
-        tracker.down(2, 100, 0)
-        expect(tracker.down(3, 50, 50)).toBe("gesture-extra")
-        expect(tracker.move(3, 60, 60)).toBeNull()
-        expect(tracker.pair).toEqual([1, 2])
+    it("ends when a finger lifts", () => {
+        const gesture = new TwoFingerGesture()
+        gesture.update([finger(1, 0, 0), finger(2, 100, 0)])
+        expect(gesture.update([finger(1, 0, 0)]).kind).toBe("end")
+        expect(gesture.active).toBe(false)
+        expect(gesture.update([finger(1, 0, 0)]).kind).toBe("idle")
     })
 
-    it("ends the gesture when a gesture finger lifts, and can start another", () => {
-        const tracker = new TouchTracker()
-        tracker.down(1, 0, 0)
-        tracker.down(2, 100, 0)
-        expect(tracker.up(2)).toBe(true)
-        expect(tracker.gesturing).toBe(false)
-        expect(tracker.move(1, 10, 10)).toBeNull()
-        expect(tracker.down(4, 100, 0)).toBe("gesture-start")
-        expect(tracker.pair).toEqual([1, 4])
+    it("keeps following the first two fingers when a third one comes and goes", () => {
+        const gesture = new TwoFingerGesture()
+        gesture.update([finger(1, 0, 0), finger(2, 100, 0)])
+        const third = gesture.update([finger(1, 0, 0), finger(2, 100, 0), finger(3, 50, 50)])
+        expect(third.kind).toBe("move")
+        const gone = gesture.update([finger(1, 0, 0), finger(2, 100, 0)])
+        expect(gone.kind).toBe("move")
     })
 
-    it("does not report a gesture end for a lifted bystander", () => {
-        const tracker = new TouchTracker()
-        tracker.down(1, 0, 0)
-        tracker.down(2, 100, 0)
-        tracker.down(3, 50, 50)
-        expect(tracker.up(3)).toBe(false)
-        expect(tracker.gesturing).toBe(true)
+    it("pairs up again when a finger of the pair lifts but another stays down", () => {
+        const gesture = new TwoFingerGesture()
+        gesture.update([finger(1, 0, 0), finger(2, 100, 0), finger(3, 50, 50)])
+        const step = gesture.update([finger(2, 100, 0), finger(3, 50, 50)])
+        expect(step.kind).toBe("start")
+        expect(gesture.active).toBe(true)
+    })
+
+    it("recovers from a finger the browser stopped reporting", () => {
+        const gesture = new TwoFingerGesture()
+        gesture.update([finger(1, 0, 0), finger(2, 100, 0)])
+        // a later event lists a single finger: nothing is left stuck
+        expect(gesture.update([finger(7, 5, 5)]).kind).toBe("end")
+        expect(gesture.update([finger(7, 5, 5), finger(8, 105, 5)]).kind).toBe("start")
     })
 
     it("survives two fingers that start on the same pixel", () => {
-        const tracker = new TouchTracker()
-        tracker.down(1, 100, 100)
-        tracker.down(2, 100, 100)
-        const update = tracker.move(2, 101, 100)
-        expect(Number.isFinite(update?.scale)).toBe(true)
+        const gesture = new TwoFingerGesture()
+        gesture.update([finger(1, 100, 100), finger(2, 100, 100)])
+        const step = gesture.update([finger(1, 100, 100), finger(2, 101, 100)])
+        expect(step.kind === "move" && Number.isFinite(step.update.scale)).toBe(true)
     })
 
-    it("forgets everything on clear", () => {
-        const tracker = new TouchTracker()
-        tracker.down(1, 0, 0)
-        tracker.down(2, 100, 0)
-        tracker.clear()
-        expect(tracker.gesturing).toBe(false)
-        expect(tracker.down(5, 0, 0)).toBe("single")
+    it("forgets everything on reset", () => {
+        const gesture = new TwoFingerGesture()
+        gesture.update([finger(1, 0, 0), finger(2, 100, 0)])
+        gesture.reset()
+        expect(gesture.active).toBe(false)
     })
 })
 
 describe("pinchInterval", () => {
     it("keeps the anchor under the midpoint", () => {
         const [min, max] = pinchInterval(1000, 0.25, 400, 10_000)
-        expect(min).toBe(900) // anchor sits 25% into a 400 unit wide window
+        expect(min).toBe(900)
         expect(max).toBe(1300)
     })
 
     it("pans when only the midpoint moves", () => {
         const left = pinchInterval(1000, 0.5, 400, 10_000)
         const right = pinchInterval(1000, 0.75, 400, 10_000)
-        expect(right[0]).toBeLessThan(left[0]) // fingers moved right, content follows, view moves left
+        expect(right[0]).toBeLessThan(left[0])
         expect(right[1] - right[0]).toBe(400)
     })
 

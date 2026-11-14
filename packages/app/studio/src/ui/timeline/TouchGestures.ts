@@ -2,82 +2,68 @@
 // Two fingers pan and zoom, a single finger keeps doing what it always did (move a region, press a button...).
 
 export type Point = { readonly x: number, readonly y: number }
+export type TouchPoint = Point & { readonly id: number }
 
 export type GestureUpdate = {
     // midpoint between the two fingers
     readonly center: Point
     // movement of that midpoint since the previous update
     readonly delta: Point
-    // current finger distance / distance when the second finger landed (above 1 = fingers spread apart)
+    // current finger distance / distance when the gesture began (above 1 = fingers spread apart)
     readonly scale: number
 }
 
-export type TouchStart =
-    | "single" // first finger: not ours, let the normal handlers run
-    | "gesture-start" // second finger landed: a pan/zoom gesture begins
-    | "gesture-extra" // a third finger while gesturing: swallowed
+export type GestureStep =
+    | { readonly kind: "idle" }
+    | { readonly kind: "start", readonly center: Point }
+    | { readonly kind: "move", readonly update: GestureUpdate }
+    | { readonly kind: "end" }
 
-export class TouchTracker {
-    readonly #pointers = new Map<number, Point>()
+const Idle: GestureStep = {kind: "idle"}
+const End: GestureStep = {kind: "end"}
+
+/**
+ * Feed it the fingers that are currently down (oldest first) after every touch event. Because the caller passes
+ * the complete list each time, a finger the browser stopped reporting can never leave this stuck.
+ */
+export class TwoFingerGesture {
     #pair: ReadonlyArray<number> = []
     #startDistance: number = 1
-    #lastCenter: Point = {x: 0, y: 0}
+    #last: Point = {x: 0, y: 0}
 
-    get gesturing(): boolean {return this.#pair.length === 2}
-    // pointer ids of the two fingers of the active gesture (empty when not gesturing)
-    get pair(): ReadonlyArray<number> {return this.#pair}
-    get center(): Point {return this.#lastCenter}
-    isInGesture(id: number): boolean {return this.#pair.includes(id)}
+    get active(): boolean {return this.#pair.length === 2}
 
-    down(id: number, x: number, y: number): TouchStart {
-        this.#pointers.set(id, {x, y})
-        if (this.gesturing) {return "gesture-extra"}
-        if (this.#pointers.size < 2) {return "single"}
-        // pair the new finger with the oldest finger that is still down
-        const first = [...this.#pointers.keys()].find(other => other !== id)
-        if (first === undefined) {return "single"}
-        this.#pair = [first, id]
-        this.#startDistance = this.#distance()
-        this.#lastCenter = this.#midpoint()
-        return "gesture-start"
+    update(fingers: ReadonlyArray<TouchPoint>): GestureStep {
+        if (fingers.length < 2) {
+            if (!this.active) {return Idle}
+            this.#pair = []
+            return End
+        }
+        if (this.active) {
+            const a = fingers.find(finger => finger.id === this.#pair[0])
+            const b = fingers.find(finger => finger.id === this.#pair[1])
+            if (a !== undefined && b !== undefined) {
+                const center = midpoint(a, b)
+                const delta = {x: center.x - this.#last.x, y: center.y - this.#last.y}
+                this.#last = center
+                return {kind: "move", update: {center, delta, scale: distance(a, b) / this.#startDistance}}
+            }
+            // one finger of the pair lifted while others stayed down: pair up again with the oldest two
+        }
+        const [a, b] = fingers
+        this.#pair = [a.id, b.id]
+        this.#startDistance = distance(a, b)
+        this.#last = midpoint(a, b)
+        return {kind: "start", center: this.#last}
     }
 
-    move(id: number, x: number, y: number): GestureUpdate | null {
-        if (!this.#pointers.has(id)) {return null}
-        this.#pointers.set(id, {x, y})
-        if (!this.gesturing || !this.isInGesture(id)) {return null}
-        const center = this.#midpoint()
-        const delta = {x: center.x - this.#lastCenter.x, y: center.y - this.#lastCenter.y}
-        this.#lastCenter = center
-        return {center, delta, scale: this.#distance() / this.#startDistance}
-    }
-
-    // returns true when this lift ended the active gesture
-    up(id: number): boolean {
-        this.#pointers.delete(id)
-        if (!this.isInGesture(id)) {return false}
-        this.#pair = []
-        return true
-    }
-
-    clear(): void {
-        this.#pointers.clear()
-        this.#pair = []
-    }
-
-    #point(id: number): Point {return this.#pointers.get(id) ?? {x: 0, y: 0}}
-
-    #midpoint(): Point {
-        const [a, b] = this.#pair.map(id => this.#point(id))
-        return {x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5}
-    }
-
-    // never below one pixel, so a pinch that starts with touching fingers cannot divide by zero
-    #distance(): number {
-        const [a, b] = this.#pair.map(id => this.#point(id))
-        return Math.max(1.0, Math.hypot(a.x - b.x, a.y - b.y))
-    }
+    reset(): void {this.#pair = []}
 }
+
+const midpoint = (a: Point, b: Point): Point => ({x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5})
+
+// never below one pixel, so a pinch that starts with touching fingers cannot divide by zero
+const distance = (a: Point, b: Point): number => Math.max(1.0, Math.hypot(a.x - b.x, a.y - b.y))
 
 /**
  * The visible interval (in timeline units) after a pinch: the unit that was under the fingers when the gesture

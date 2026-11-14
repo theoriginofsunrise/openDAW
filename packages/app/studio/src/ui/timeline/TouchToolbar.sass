@@ -1,0 +1,29 @@
+component
+  position: fixed
+  left: calc(env(safe-area-inset-left, 0px) + 64px)
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 40px)
+  z-index: 30
+  display: flex
+  gap: 2px
+  padding: 3px
+  border-radius: 12px
+  background-color: rgba(black, 0.6)
+  touch-action: none
+  user-select: none
+  -webkit-user-select: none
+
+  > button
+    min-width: 54px
+    min-height: 38px
+    padding: 0 12px
+    border: none
+    border-radius: 9px
+    font-size: 13px
+    color: rgba(white, 0.75)
+    background-color: transparent
+    outline: none
+
+    &.active
+      color: black
+      font-weight: bold
+      background-color: rgba(white, 0.85)

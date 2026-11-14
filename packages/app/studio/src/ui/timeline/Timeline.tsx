@@ -10,6 +10,9 @@ import {AudioUnitsTimeline} from "./tracks/audio-unit/AudioUnitsTimeline.tsx"
 import {ClipsHeader} from "@/ui/timeline/tracks/audio-unit/clips/ClipsHeader.tsx"
 import {ppqn} from "@opendaw/lib-dsp"
 import {deferNextFrame, Html} from "@opendaw/lib-dom"
+import {TouchNavigation} from "@/ui/timeline/TouchNavigation"
+import {TouchModifiers} from "@/ui/timeline/TouchModifiers"
+import {TouchToolbar} from "@/ui/timeline/TouchToolbar"
 
 const className = Html.adoptStyleSheet(css, "Timeline")
 
@@ -38,6 +41,21 @@ export const Timeline = ({lifecycle, service}: Construct) => {
     )
     const updateRecordingState = () =>
         element.classList.toggle("recording", engine.isRecording.getValue() || engine.isCountingIn.getValue())
+    // Phone fork: two-finger pan and zoom, and (on touch screens) a tool bar replacing the Shift/Ctrl/Alt keys
+    const regionsElement = element.querySelector<HTMLElement>("[data-scope=regions]") ?? element
+    lifecycle.own(TouchNavigation.install(element, {
+        regions: regionsElement,
+        range: service.timeline.range,
+        scrollTracksBy: deltaY => {
+            const tracks = element.querySelector<HTMLElement>("[data-group-surface=timeline] > .scrollable")
+            if (tracks !== null) {tracks.scrollTop += deltaY}
+        }
+    }))
+    if (window.matchMedia("(pointer: coarse)").matches || window.location.search.includes("touchtools")) {
+        const toolbar = TouchToolbar({lifecycle})
+        document.body.appendChild(toolbar)
+        lifecycle.ownAll(TouchModifiers.install(window, regionsElement), {terminate: () => toolbar.remove()})
+    }
     const {request} = lifecycle.own(deferNextFrame(() =>
         element.classList.toggle("primary-tracks-visible", markers.getValue() || tempo.getValue() || signature.getValue()
             || key.getValue() || chords.getValue())))

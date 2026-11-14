@@ -223,6 +223,10 @@ export namespace TrackGrouping {
         target.row.classList.add(target.inside ? "group-drop-inside" : target.after ? "group-drop-after" : "group-drop-before")
     }
 
+    // touch: how long a header has to be pressed before it can be dragged, and how far a finger may wander meanwhile
+    const TouchLongPress = 350
+    const TouchSlop = 8
+
     export const installGroupTrackDrag = (handle: HTMLElement, project: Project, unit: AudioUnitBox,
                                           laneDrag: (target: Nullable<EventTarget>) => boolean = () => false): Terminable => {
         handle.dataset.groupHeader = UUID.toString(unit.address.uuid)
@@ -233,12 +237,29 @@ export namespace TrackGrouping {
             if (start.target instanceof Element && start.target.closest("button,input,select,textarea,a,[contenteditable],.track-resizer,[data-track-controls],svg.collapse-automation")) {return Option.None}
             if (!unit.isAttached() || unit.type.getValue() === AudioUnitType.Output) {return Option.None}
             const units = project.audioUnitSelection.isSelected(unit) ? [...project.audioUnitSelection.selected()] : [unit]
+            // Touch: a quick tap selects and a quick swipe does nothing here, only a press-and-hold picks the track up.
+            const touch = start.pointerType === "touch"
+            let armed = !touch
+            let cancelled = false
+            const armTimer = touch ? setTimeout(() => {
+                armed = true
+                handle.style.boxShadow = "inset 0 0 0 2px #5eead4"
+            }, TouchLongPress) : undefined
             let moved = false
             let surface: Optional<HTMLElement>
             let target: Optional<GroupDrop>
             const clear = () => {if (isDefined(surface)) {markGroupDrop(surface)}}
             return Option.wrap({
                 update: event => {
+                    if (cancelled) {return}
+                    if (!armed) {
+                        // moved before the hold completed: this was a swipe, not a pick-up
+                        if (Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) > TouchSlop) {
+                            cancelled = true
+                            clearTimeout(armTimer)
+                        }
+                        return
+                    }
                     if (!moved && Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) < 5) {return}
                     if (!moved) {
                         moved = true
@@ -253,12 +274,16 @@ export namespace TrackGrouping {
                     if (isDefined(surface)) {markGroupDrop(surface, target)}
                 },
                 approve: () => {
-                    if (moved && isDefined(target)) {
+                    if (!cancelled && moved && isDefined(target)) {
                         const {parent, before} = target
                         project.editing.modify(() => project.grouping.move(units, parent, before))
                     }
                 },
-                finally: clear
+                finally: () => {
+                    clearTimeout(armTimer)
+                    handle.style.boxShadow = ""
+                    clear()
+                }
             } satisfies Dragging.Process)
         })
         return Terminable.many(dragging, {terminate: () => handle.removeAttribute("data-group-header")})

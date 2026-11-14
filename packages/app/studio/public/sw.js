@@ -2,8 +2,6 @@
 // "__BUILD__" is replaced with the build uuid at deploy time, so every deploy ships a new worker.
 const BUILD = "__BUILD__"
 const CACHE = `opendaw-${BUILD}`
-// The studio build fingerprints its files with a uuid, e.g. main.<uuid>.js: those never change.
-const FINGERPRINTED = /\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\./
 
 // Download the whole app once (the list is written at build time), so the first offline launch works.
 // A file that fails to download must never abort the install.
@@ -39,31 +37,26 @@ self.addEventListener("activate", event => event.waitUntil((async () => {
     await self.clients.claim()
 })()))
 
-const store = async (key, response) => {
+const store = async (request, response) => {
     // Only same-origin, complete responses. Cached responses keep their COOP/COEP headers.
     if (response.ok && response.type === "basic" && response.status === 200) {
+        // keyed without the query string: the app adds timestamps like ?v=1794... to some requests
+        const {origin, pathname} = new URL(request.url)
         const cache = await caches.open(CACHE)
-        await cache.put(key, response.clone())
+        await cache.put(new Request(`${origin}${pathname}`), response.clone())
     }
     return response
 }
 
+// Every build has its own cache (see CACHE), so a copy on the phone always belongs to the build this worker
+// shipped with: serving it first is both the fastest and the most consistent choice. A new build takes over on the
+// next launch.
 const cacheFirst = async request => {
-    const cached = await caches.match(request)
+    const cached = await caches.match(request, {ignoreSearch: true})
     if (cached !== undefined) {return cached}
-    return store(request, await fetch(request))
-}
-
-// Files that keep their name between builds: always try the network, fall back to the copy on the phone.
-// The query string is dropped for the stored copy, the app adds timestamps like ?v=1794... to some requests.
-const networkFirst = async request => {
-    const url = new URL(request.url)
-    const key = new Request(`${url.origin}${url.pathname}`)
     try {
-        return await store(key, await fetch(request))
+        return await store(request, await fetch(request))
     } catch (error) {
-        const cached = await caches.match(key)
-        if (cached !== undefined) {return cached}
         if (request.mode === "navigate") {
             const shell = await caches.match("/")
             if (shell !== undefined) {return shell}
@@ -80,5 +73,5 @@ self.addEventListener("fetch", event => {
     if (url.pathname.startsWith("/wclap")) {return} // plugin frame has its own worker and scope
     if (url.pathname.startsWith("/od-")) {return} // proxied samples, soundfonts, models: network only
     if (url.pathname === "/sw.js" || url.pathname === "/precache.json") {return}
-    event.respondWith(FINGERPRINTED.test(url.pathname) ? cacheFirst(request) : networkFirst(request))
+    event.respondWith(cacheFirst(request))
 })

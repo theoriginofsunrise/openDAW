@@ -25,7 +25,6 @@ import {AnyDragData} from "@/ui/AnyDragData"
 import {installAutoScroll} from "@/ui/AutoScroll"
 import {Config} from "@/ui/timeline/Config"
 import {UnitInsertion} from "./UnitInsertion"
-import {TouchNavigation} from "@/ui/timeline/TouchNavigation"
 import {PresetApplication} from "@/ui/browse/PresetApplication"
 import {SpotlightCreate} from "@/ui/spotlight/SpotlightCreate"
 import {NewInstrumentRegion} from "@/ui/timeline/NewInstrumentRegion"
@@ -237,11 +236,6 @@ export const AudioUnitsTimeline = ({lifecycle, service}: Construct) => {
             service.project.audioUnitSelection.deselectAll()
         }, {capture: true}),
         Events.subscribe(element, "wheel",(event: WheelEvent) => scrollModel.position += event.deltaY, {passive: false}),
-        TouchNavigation.install(element, {
-            regions: element.querySelector<HTMLElement>("[data-scope=regions]") ?? element,
-            range,
-            scroll: scrollModel
-        }),
         scrollModel.subscribe(() => scrollContainer.scrollTop = scrollModel.position),
         Events.subscribe(scrollContainer, "scroll", () => scrollModel.position = scrollContainer.scrollTop),
         installAutoScroll(scrollContainer, (_deltaX, deltaY) => scrollModel.position += deltaY,

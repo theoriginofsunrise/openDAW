@@ -49,3 +49,30 @@ component
     border-radius: calc(#{$thickness} - 2px)
     position: absolute
     background-color: rgba(white, 0.3)
+
+// Touch screens: a thumb a finger can actually hit
+@media (pointer: coarse)
+  component
+    touch-action: none
+
+    &.vertical
+      width: 26px
+
+      > div
+        left: 4px
+        right: 4px
+        width: 18px
+        border-radius: 9px
+
+    &.horizontal
+      height: 26px
+
+      > div
+        top: 4px
+        bottom: 4px
+        height: 18px
+        border-radius: 9px
+
+    &:not(.floating) > div, &.floating > div
+      background-color: rgba(white, 0.3)
+
