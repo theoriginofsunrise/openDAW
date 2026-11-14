@@ -8,5 +8,8 @@
 /sw.js
   Cache-Control: no-cache
 
+/precache.json
+  Cache-Control: no-cache
+
 /manifest.webmanifest
   Content-Type: application/manifest+json

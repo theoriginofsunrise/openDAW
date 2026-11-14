@@ -76,6 +76,9 @@ jobs:
           find packages/app/studio/dist -type f -size +24M -print -delete | tee /tmp/dropped.txt
           if [ -s /tmp/dropped.txt ]; then echo "::warning::Files above the Pages limit were removed (see log)"; fi
 
+      - name: Write the offline file list for the service worker
+        run: node scripts/write-precache.mjs packages/app/studio/dist
+
       - name: Create the Pages project (no-op if it already exists)
         uses: cloudflare/wrangler-action@v3
         continue-on-error: true
