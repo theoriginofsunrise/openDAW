@@ -47,6 +47,18 @@ jobs:
           mkdir -p packages/app/studio/public
           echo '{"fetchedAt":"1970-01-01T00:00:00.000Z","totalCount":0,"sponsors":[]}' > packages/app/studio/public/sponsors.json
 
+      - name: Route the content servers through the same-origin proxy (functions/)
+        run: |
+          FILES=$(grep -rlE "https://(api|assets)\.opendaw\.studio" \
+            packages/app/studio/src/opendaw-api \
+            packages/app/studio/src/ui/dashboard \
+            packages/app/studio/src/ui/pages/OpenBundlePage.tsx \
+            packages/lib/inference/src/tasks)
+          echo "$FILES"
+          echo "$FILES" | xargs sed -i \
+            -e 's#https://api\.opendaw\.studio#/od-api#g' \
+            -e 's#https://assets\.opendaw\.studio#/od-assets#g'
+
       - name: Build
         env:
           DEPLOY_BASE: /

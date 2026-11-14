@@ -48,6 +48,7 @@ self.addEventListener("fetch", event => {
     const url = new URL(request.url)
     if (url.origin !== self.location.origin) {return} // samples, soundfonts, cloud APIs: network only
     if (url.pathname.startsWith("/wclap")) {return} // plugin frame has its own worker and scope
+    if (url.pathname.startsWith("/od-")) {return} // proxied samples, soundfonts, models: network only
     if (url.pathname.endsWith("/build-info.json") || url.pathname === "/sw.js") {return}
     event.respondWith(FINGERPRINTED.test(url.pathname) ? cacheFirst(request) : networkFirst(request))
 })
