@@ -1,10 +1,12 @@
 {
   "$schema": "https://turborepo.com/schema.json",
-  "globalEnv": [
+ "globalEnv": [
     "CI",
     "BRANCH_NAME",
     "DEPLOY_ENV",
-    "VITE_WCLAP_ORIGIN"
+    "VITE_WCLAP_ORIGIN",
+    "DEPLOY_BASE",
+    "VITE_ALLOW_MOBILE"
   ],
   "tasks": {
     "build": {
