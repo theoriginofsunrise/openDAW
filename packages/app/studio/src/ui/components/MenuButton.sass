@@ -59,3 +59,13 @@ component
     &.framed
       border: 0.5px solid var(--color-active)
       box-shadow: 0 0 3px -1px var(--color-active)
+
+@media (pointer: coarse)
+  component
+    position: relative
+
+    &::before
+      content: ""
+      position: absolute
+      inset: -0.6em
+

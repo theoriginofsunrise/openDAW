@@ -15,10 +15,12 @@ const Tools: ReadonlyArray<{ tool: EditTool, label: string, title: string }> = [
 
 type Construct = {
     lifecycle: Lifecycle
+    // removes the selected regions (the Delete key on a desktop)
+    deleteSelection: () => void
 }
 
 // Phone fork: picks the region tool that the Shift, Ctrl and Alt keys select on a desktop (see TouchModifiers).
-export const TouchToolbar = ({lifecycle}: Construct) => {
+export const TouchToolbar = ({lifecycle, deleteSelection}: Construct) => {
     const buttons = new Map<EditTool, HTMLElement>()
     const element: HTMLElement = <div className={className}/>
     Tools.forEach(({tool, label, title}) => {
@@ -26,6 +28,9 @@ export const TouchToolbar = ({lifecycle}: Construct) => {
         buttons.set(tool, button)
         element.appendChild(button)
     })
+    const remove: HTMLElement = <button type="button" className="delete" title="Delete the selected regions"
+                                        onclick={deleteSelection}>Delete</button>
+    element.appendChild(remove)
     const update = () => buttons.forEach((button, tool) => button.classList.toggle("active", TouchModifiers.get() === tool))
     update()
     lifecycle.own(TouchModifiers.subscribe(update))

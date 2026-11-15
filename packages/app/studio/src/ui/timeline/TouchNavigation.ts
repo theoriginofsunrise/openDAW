@@ -1,7 +1,7 @@
-import {clamp, Terminable} from "@opendaw/lib-std"
+import {Terminable} from "@opendaw/lib-std"
 import {Events} from "@opendaw/lib-dom"
 import {TimelineRange} from "@opendaw/studio-core"
-import {GestureStep, pinchInterval, TouchPoint, TwoFingerGesture} from "./TouchGestures"
+import {GestureStep, pinchInterval, TouchPoint, TwoFingerGesture, visibleLength} from "./TouchGestures"
 
 // Phone fork: two fingers pan and zoom the timeline. The studio listens to the mouse wheel for this, which a
 // touch screen does not have. One finger is left alone, so regions, knobs and buttons behave as before.
@@ -50,7 +50,9 @@ export namespace TouchNavigation {
             const unitRange = range.unitRange
             if (unitRange <= 0.0) {return}
             const x = center.x - regions.getBoundingClientRect().left
-            const length = clamp(startLength / scale, range.toUnits(range.minimum), range.maxUnits)
+            // `range.minimum` is already in timeline units; never closer than 1/20 unit per pixel
+            const closest = Math.max(range.minimum, range.width * 0.05)
+            const length = visibleLength(startLength, scale, closest, range.maxUnits)
             const fraction = (range.xToUnit(x) - range.unitMin) / unitRange
             if (!Number.isFinite(fraction)) {return}
             const [min, max] = pinchInterval(anchor, fraction, length, range.maxUnits)
@@ -139,19 +141,42 @@ export namespace TouchNavigation {
     // Open the studio with ?touchdebug in a Safari tab to see what the touch layer sees.
     const installDebug = (view: Window) => {
         if (!view.location.search.includes("touchdebug")) {
-            return {show: (_event: TouchEvent, _owned: number, _gesturing: boolean, _step: GestureStep) => {}, terminate: () => {}}
+            return {
+                show: (_event: TouchEvent, _owned: number, _gesturing: boolean, _step: GestureStep) => {},
+                terminate: () => {}
+            }
         }
         const panel = view.document.createElement("pre")
         panel.style.cssText = "position:fixed;top:4px;left:4px;z-index:99999;margin:0;padding:6px 8px;" +
             "font:11px monospace;color:#0f0;background:rgba(0,0,0,.7);pointer-events:none;border-radius:6px"
         view.document.body.appendChild(panel)
+        let touchLine = ""
+        const taps: Array<string> = []
+        const render = () => {panel.textContent = `${touchLine}\n${taps.join("\n")}`}
+        const describe = (target: EventTarget | null): string => {
+            if (!(target instanceof Element)) {return "?"}
+            const label = target.id !== "" ? `#${target.id}` : typeof target.className === "string" && target.className !== ""
+                ? `.${target.className.split(" ")[0]}` : ""
+            return `${target.tagName.toLowerCase()}${label}`
+        }
+        const log = (event: Event): void => {
+            const at = event instanceof MouseEvent ? ` @${Math.round(event.clientX)},${Math.round(event.clientY)}` : ""
+            taps.push(`${event.type} ${describe(event.target)}${at}`)
+            if (taps.length > 6) {taps.shift()}
+            render()
+        }
+        const types = ["pointerdown", "pointerup", "pointercancel", "click", "contextmenu"] as const
+        types.forEach(type => view.addEventListener(type, log, {capture: true}))
         return {
             show: (event: TouchEvent, owned: number, gesturing: boolean, step: GestureStep) => {
-                panel.textContent = `${event.type} touches=${event.touches.length} owned=${owned}\n` +
-                    `gesturing=${gesturing} step=${step.kind}` +
-                    (step.kind === "move" ? ` scale=${step.update.scale.toFixed(2)}` : "")
+                touchLine = `${event.type} touches=${event.touches.length} owned=${owned} gesturing=${gesturing} ` +
+                    `step=${step.kind}` + (step.kind === "move" ? ` scale=${step.update.scale.toFixed(2)}` : "")
+                render()
             },
-            terminate: () => panel.remove()
+            terminate: () => {
+                types.forEach(type => view.removeEventListener(type, log, {capture: true}))
+                panel.remove()
+            }
         }
     }
 }

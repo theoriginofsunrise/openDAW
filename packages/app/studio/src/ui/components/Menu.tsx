@@ -95,6 +95,7 @@ export class Menu implements Terminable, Lifecycle {
     readonly #container: HTMLElement
     readonly #scrollDown: HTMLElement
     readonly #openTime: number
+    #touchScrolled: boolean = false
 
     #childMenu: Option<Menu> = Option.None
 
@@ -279,6 +280,7 @@ export class Menu implements Terminable, Lifecycle {
                     itemElement.onpointerleave = (event: PointerEvent) => this.#onPointerLeave(item, itemElement, event)
                     itemElement.onpointerup = (event: PointerEvent) => {
                         if (Date.now() - this.#openTime < Menu.MIN_TIME_MS) {return}
+                        if (this.#touchScrolled) {return}
                         this.#onPointerUp(item, itemElement, event)
                     }
                     return (
@@ -303,6 +305,25 @@ export class Menu implements Terminable, Lifecycle {
     #setupScrolling(): void {
         const scroll = (direction: int) => this.#container.scrollTop += direction * this.#computeEmInPixels() / 3
         this.element.classList.add("overflowing")
+        // Phone fork: drag with a finger to scroll. A drag must not select the item the finger ends on.
+        let touchFrom = 0
+        let touchTop = 0
+        this.#terminator.ownAll(
+            Events.subscribe(this.#container, "pointerdown", (event: PointerEvent) => {
+                if (event.pointerType !== "touch") {return}
+                touchFrom = event.clientY
+                touchTop = this.#container.scrollTop
+                this.#touchScrolled = false
+            }),
+            Events.subscribe(this.#container, "pointermove", (event: PointerEvent) => {
+                if (event.pointerType !== "touch") {return}
+                const delta = event.clientY - touchFrom
+                if (!this.#touchScrolled && Math.abs(delta) > 8) {this.#touchScrolled = true}
+                if (this.#touchScrolled) {this.#container.scrollTop = touchTop - delta}
+            }),
+            // after the items' own pointerup handlers ran
+            Events.subscribe(this.#container, "pointerup", () => {setTimeout(() => {this.#touchScrolled = false}, 0)})
+        )
         this.#terminator.own(Events.subscribe(this.element, "wheel", (event: WheelEvent) => {
             event.preventDefault()
             scroll(Math.sign(event.deltaY) * this.#computeEmInPixels() * 1.5)

@@ -21,6 +21,11 @@ html, body
   background-color: var(--color-background)
   touch-action: pan-x pan-y
 
+// Phone fork: keep the interface out of the notch, the rounded corners and the home indicator
+body
+  box-sizing: border-box
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px)
+
 canvas
   outline: none
   image-rendering: pixelated

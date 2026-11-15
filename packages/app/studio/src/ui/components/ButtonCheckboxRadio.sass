@@ -87,3 +87,12 @@ component
         background-color: var(--color-active)
         opacity: 0.08
         pointer-events: none
+
+// Touch screens: grow the area a finger can hit without moving anything
+@media (pointer: coarse)
+  component
+    > label::before
+      content: ""
+      position: absolute
+      inset: -0.35em
+

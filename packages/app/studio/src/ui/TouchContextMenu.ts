@@ -37,6 +37,9 @@ export namespace TouchContextMenu {
                 suppressCompat = false
                 if (event.pointerType !== "touch" || isNull(event.target) || Events.isTextInput(event.target)) {return}
                 const target = event.target
+                // Phone fork: a press-and-hold on a track header picks the track up (see TrackGrouping), the three
+                // dots button opens its menu.
+                if (target instanceof Element && target.closest("[data-group-header]") !== null) {return}
                 originX = event.clientX
                 originY = event.clientY
                 timeoutId = setTimeout(() => fire(target), DURATION)

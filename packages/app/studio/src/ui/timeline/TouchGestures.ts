@@ -81,3 +81,10 @@ export const pinchInterval = (anchor: number, fraction: number, length: number,
     if (min + visible > maxUnits) {min = maxUnits - visible}
     return [min, min + visible]
 }
+
+/**
+ * Visible length (in timeline units) while pinching: the length at the start divided by how far the fingers
+ * spread, kept between the closest zoom and the whole timeline.
+ */
+export const visibleLength = (startLength: number, scale: number, minLength: number, maxUnits: number): number =>
+    Math.min(maxUnits, Math.max(minLength, startLength / scale))

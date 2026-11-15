@@ -59,6 +59,14 @@ jobs:
             -e 's#https://api\.opendaw\.studio#/od-api#g' \
             -e 's#https://assets\.opendaw\.studio#/od-assets#g'
 
+      - name: Use your own Google Drive client id (optional, repository variable GOOGLE_DRIVE_CLIENT_ID)
+        if: ${{ vars.GOOGLE_DRIVE_CLIENT_ID != '' }}
+        env:
+          GOOGLE_DRIVE_CLIENT_ID: ${{ vars.GOOGLE_DRIVE_CLIENT_ID }}
+        run: |
+          sed -i "s#628747153367-gt1oqcn3trr9l9a7jhigja6l1t3f1oik\.apps\.googleusercontent\.com#${GOOGLE_DRIVE_CLIENT_ID}#" packages/app/studio/src/boot.ts
+          grep -c "${GOOGLE_DRIVE_CLIENT_ID}" packages/app/studio/src/boot.ts
+
       - name: Build
         env:
           DEPLOY_BASE: /

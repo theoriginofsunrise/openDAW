@@ -52,7 +52,15 @@ export const Timeline = ({lifecycle, service}: Construct) => {
         }
     }))
     if (window.matchMedia("(pointer: coarse)").matches || window.location.search.includes("touchtools")) {
-        const toolbar = TouchToolbar({lifecycle})
+        const {regionSelection, editing} = project
+        const toolbar = TouchToolbar({
+            lifecycle,
+            deleteSelection: () => {
+                const selected = regionSelection.selected()
+                if (selected.length === 0) {return}
+                editing.modify(() => selected.forEach(region => region.box.delete()))
+            }
+        })
         document.body.appendChild(toolbar)
         lifecycle.ownAll(TouchModifiers.install(window, regionsElement), {terminate: () => toolbar.remove()})
     }

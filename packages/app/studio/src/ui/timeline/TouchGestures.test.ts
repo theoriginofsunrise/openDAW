@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest"
-import {pinchInterval, TouchPoint, TwoFingerGesture} from "./TouchGestures"
+import {pinchInterval, TouchPoint, TwoFingerGesture, visibleLength} from "./TouchGestures"
 
 const finger = (id: number, x: number, y: number): TouchPoint => ({id, x, y})
 
@@ -116,5 +116,22 @@ describe("pinchInterval", () => {
         const [min, max] = pinchInterval(5000, 0.5, 50_000, 10_000)
         expect(min).toBe(0)
         expect(max).toBe(10_000)
+    })
+})
+
+describe("visibleLength", () => {
+    it("shows less when the fingers spread and more when they pinch", () => {
+        expect(visibleLength(1000, 2, 10, 100_000)).toBe(500)
+        expect(visibleLength(1000, 0.5, 10, 100_000)).toBe(2000)
+    })
+
+    it("stops at the closest zoom and at the whole timeline", () => {
+        expect(visibleLength(1000, 1000, 40, 100_000)).toBe(40)
+        expect(visibleLength(1000, 0.001, 40, 5_000)).toBe(5_000)
+    })
+
+    it("does not collapse when the closest zoom is far below the visible length", () => {
+        // regression: the closest zoom was once expressed as a fraction of the whole timeline, so it equalled it
+        expect(visibleLength(30_720, 2, 40, 384_000)).toBe(15_360)
     })
 })

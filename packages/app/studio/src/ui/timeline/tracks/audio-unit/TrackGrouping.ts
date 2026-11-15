@@ -241,6 +241,9 @@ export namespace TrackGrouping {
             const touch = start.pointerType === "touch"
             let armed = !touch
             let cancelled = false
+            let scrollFrom = start.clientY
+            // the track list this header belongs to, scrolled by a swipe
+            const tracks = handle.closest("[data-group-surface=timeline]")?.querySelector<HTMLElement>(":scope > .scrollable") ?? null
             const armTimer = touch ? setTimeout(() => {
                 armed = true
                 handle.style.boxShadow = "inset 0 0 0 2px #5eead4"
@@ -253,11 +256,15 @@ export namespace TrackGrouping {
                 update: event => {
                     if (cancelled) {return}
                     if (!armed) {
-                        // moved before the hold completed: this was a swipe, not a pick-up
+                        // moved before the hold completed: this was a swipe, not a pick-up, so scroll the tracks
                         if (Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) > TouchSlop) {
                             cancelled = true
                             clearTimeout(armTimer)
                         }
+                        if (cancelled && tracks !== null) {
+                            tracks.scrollTop -= event.clientY - scrollFrom
+                        }
+                        scrollFrom = event.clientY
                         return
                     }
                     if (!moved && Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) < 5) {return}
