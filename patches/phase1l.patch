@@ -1,0 +1,1212 @@
+diff --git a/packages/app/studio/src/AudioRecovery.ts b/packages/app/studio/src/AudioRecovery.ts
+new file mode 100644
+index 0000000..c5246be
+--- /dev/null
++++ b/packages/app/studio/src/AudioRecovery.ts
+@@ -0,0 +1,23 @@
++import {Terminable} from "@opendaw/lib-std"
++import {AudioContexts} from "@opendaw/studio-core"
++
++// Phone fork: when another app uses the audio (a call, a voice memo, a video), iOS takes it away from the page and
++// Play stays silent. Ask for it back whenever the page returns to the front, without any dialog. The Play button
++// asks again, and offers a restart if the audio is still not available.
++export namespace AudioRecovery {
++    export const install = (context: AudioContext): Terminable => {
++        const onVisible = (): void => {
++            if (document.visibilityState !== "visible" || context.state === "running") {return}
++            void AudioContexts.resume(context, {silent: true})
++        }
++        const onState = (): void => console.debug(`AudioContext state: ${context.state}`)
++        document.addEventListener("visibilitychange", onVisible)
++        context.addEventListener("statechange", onState)
++        return {
++            terminate: () => {
++                document.removeEventListener("visibilitychange", onVisible)
++                context.removeEventListener("statechange", onState)
++            }
++        }
++    }
++}
+diff --git a/packages/app/studio/src/AutoBackup.ts b/packages/app/studio/src/AutoBackup.ts
+index 24016e2..8502992 100644
+--- a/packages/app/studio/src/AutoBackup.ts
++++ b/packages/app/studio/src/AutoBackup.ts
+@@ -11,6 +11,11 @@ export namespace AutoBackup {
+     // the folder the studio's recovery code (Recovery.ts) writes to and reads from
+     const BackupPath = ".backup"
+ 
++    let flushNow: (() => Promise<void>) | null = null
++
++    // Writes the backup right now (before a restart, for example).
++    export const flush = async (): Promise<void> => {await flushNow?.()}
++
+     export const install = (service: StudioService): Terminable => {
+         let busy = false
+         let written = false
+@@ -40,6 +45,7 @@ export namespace AutoBackup {
+             }
+         }
+ 
++        flushNow = backup
+         const onHidden = (): void => {if (document.visibilityState === "hidden") {void backup()}}
+         const onPageHide = (): void => {void backup()}
+         const timer = setInterval(() => void backup(), IntervalMs)
+diff --git a/packages/app/studio/src/boot.ts b/packages/app/studio/src/boot.ts
+index 002c5dc..f2ce808 100644
+--- a/packages/app/studio/src/boot.ts
++++ b/packages/app/studio/src/boot.ts
+@@ -1,3 +1,4 @@
++import {AudioRecovery} from "@/AudioRecovery"
+ import {CloudSafety} from "@/CloudSafety"
+ import {PresenceService} from "@/PresenceService"
+ import {AutoBackup} from "@/AutoBackup"
+@@ -151,6 +152,11 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
+     }
+     ScreenWake.install(service.engine)
+     AutoBackup.install(service)
++    AudioContexts.restart = async () => {
++        await AutoBackup.flush()
++        location.reload()
++    }
++    AudioRecovery.install(context)
+     CloudSafety.install(service)
+     PresenceService.install(service, cloudAuthManager)
+     const errorHandler = new ErrorHandler(buildInfo, () => service.recovery.createBackupCommand(),
+diff --git a/packages/app/studio/src/project/ProjectBrowser.sass b/packages/app/studio/src/project/ProjectBrowser.sass
+index af6fa7b..f8e6ffc 100644
+--- a/packages/app/studio/src/project/ProjectBrowser.sass
++++ b/packages/app/studio/src/project/ProjectBrowser.sass
+@@ -2,7 +2,7 @@ component
+   flex: 1 1 0
+   padding: 0 0 0 0.25em
+   display: grid
+-  grid-template-columns: 1fr auto auto
++  grid-template-columns: 1fr auto auto auto
+   grid-template-rows: auto auto 1fr
+   column-gap: 1em
+   overflow: hidden
+@@ -90,10 +90,16 @@ component
+   component div.list
+     row-gap: 0
+ 
++    // The scroll bar floats over the right edge of the list and is 26px wide on a touch screen: keep the trash can
++    // clear of it, or a tap on the can lands on the bar.
+     .delete-icon
+       box-sizing: content-box
+       padding: 14px
+-      margin-right: 0
++      margin-right: 32px
++
++    button
++      min-width: 36px
++      min-height: 36px
+ 
+     div.labels
+       align-items: center
+diff --git a/packages/app/studio/src/project/ProjectBrowser.tsx b/packages/app/studio/src/project/ProjectBrowser.tsx
+index 967bf70..6a07f89 100644
+--- a/packages/app/studio/src/project/ProjectBrowser.tsx
++++ b/packages/app/studio/src/project/ProjectBrowser.tsx
+@@ -8,12 +8,15 @@ import {
+     Procedure,
+     RuntimeNotifier,
+     RuntimeSignal,
+-    StringComparator,
+     TimeSpan,
+     UUID
+ } from "@opendaw/lib-std"
+ import {Icon} from "@/ui/components/Icon"
+-import {IconSymbol} from "@opendaw/studio-enums"
++import {MenuButton} from "@/ui/components/MenuButton"
++import {Surface} from "@/ui/surface/Surface"
++import {ProjectOrder} from "@/project/ProjectOrder"
++import {renameProject} from "@/project/ProjectRename"
++import {Colors, IconSymbol} from "@opendaw/studio-enums"
+ import {Dialogs} from "@/ui/components/dialogs"
+ import {Await, createElement, DomElement, Frag, Group, JsxValue} from "@opendaw/lib-jsx"
+ import {Files, Html} from "@opendaw/lib-dom"
+@@ -51,6 +54,7 @@ export const ProjectBrowser = ({service, lifecycle, select, empty}: Construct) =
+                 <div className="name">Name</div>
+                 <div className="time">Modified</div>
+                 <div/>
++                <div/>
+             </header>
+             <Await factory={() => ProjectStorage.listProjects()}
+                    loading={() => (<div className="loader"><ThreeDots/></div>)}
+@@ -68,11 +72,52 @@ export const ProjectBrowser = ({service, lifecycle, select, empty}: Construct) =
+                                     onConnect={list => lifecycle.own(installScrollbars(list))}>
+                                    {projects.length === 0 && isDefined(empty)
+                                        ? empty
+-                                       : projects
+-                                       .toSorted((a, b) => -StringComparator(a.meta.modified, b.meta.modified))
++                                       : ProjectOrder.sort(projects)
+                                        .map(({uuid, meta}) => {
+                                            const icon: DomElement = <Icon symbol={IconSymbol.Delete}
+                                                                           className="delete-icon"/>
++                                           const confirmDelete = () => Dialogs.approve({
++                                               headline: "Delete Project?",
++                                               message: `Delete "${meta.name}"? This cannot be undone.`
++                                           }).then(approved => {
++                                               if (approved) {
++                                                   service.deleteProject(uuid, meta).then(() => row.remove())
++                                               }
++                                           })
++                                           const rename = async () => {
++                                               const {status, error, value} = await Promises.tryCatch(
++                                                   Surface.get().requestFloatingTextInput({
++                                                       clientX: window.innerWidth * 0.35,
++                                                       clientY: window.innerHeight * 0.25
++                                                   }, meta.name))
++                                               if (status === "rejected") {
++                                                   if (!Errors.isAbort(error)) {console.warn(error)}
++                                                   return
++                                               }
++                                               const renamed = await Promises.tryCatch(renameProject(service, uuid, value))
++                                               if (renamed.status === "rejected") {
++                                                   console.warn(renamed.error)
++                                                   RuntimeNotifier.notify({message: "Rename failed.", icon: "Warning"})
++                                               }
++                                           }
++                                           const move = (action: ProjectOrder.Action) => {
++                                               const displayed = ProjectOrder.sort(projects).map(entry => UUID.toString(entry.uuid))
++                                               ProjectOrder.save(ProjectOrder.arrange(displayed, UUID.toString(uuid), action))
++                                               RuntimeSignal.dispatch(ProjectSignals.StorageUpdated)
++                                           }
++                                           const menu: DomElement = (
++                                               <MenuButton root={MenuItem.root().setRuntimeChildrenProcedure(parent => parent.addMenuItem(
++                                                   MenuItem.default({label: "Rename..."}).setTriggerProcedure(() => void rename()),
++                                                   MenuItem.default({label: "Move up"}).setTriggerProcedure(() => move("up")),
++                                                   MenuItem.default({label: "Move down"}).setTriggerProcedure(() => move("down")),
++                                                   MenuItem.default({label: "Move to top"}).setTriggerProcedure(() => move("top")),
++                                                   MenuItem.default({label: "Delete...", separatorBefore: true})
++                                                       .setTriggerProcedure(() => void confirmDelete())))}
++                                                           style={{minWidth: "0"}}
++                                                           appearance={{color: Colors.shadow, activeColor: Colors.cream}}>
++                                                   <Icon symbol={IconSymbol.Menu}/>
++                                               </MenuButton>
++                                           )
+                                            const timeString = TimeSpan.millis(new Date(meta.modified).getTime() - now).toUnitString()
+                                            const row: HTMLElement = (
+                                                <Group onInit={element => filter.catchupAndSubscribe(owner => {
+@@ -105,19 +150,13 @@ export const ProjectBrowser = ({service, lifecycle, select, empty}: Construct) =
+                                                        <div className="name">{meta.name}</div>
+                                                        <div className="time">{timeString}</div>
+                                                    </div>
++                                                   {menu}
+                                                    {icon}
+                                                </Group>
+                                            )
+                                            icon.onclick = (event) => {
+                                                event.stopPropagation()
+-                                               Dialogs.approve({
+-                                                   headline: "Delete Project?",
+-                                                   message: `Delete "${meta.name}"? This cannot be undone.`
+-                                               }).then(approved => {
+-                                                   if (approved) {
+-                                                       service.deleteProject(uuid, meta).then(() => row.remove())
+-                                                   }
+-                                               })
++                                               void confirmDelete()
+                                            }
+                                            return row
+                                        })}
+diff --git a/packages/app/studio/src/project/ProjectOrder.test.ts b/packages/app/studio/src/project/ProjectOrder.test.ts
+new file mode 100644
+index 0000000..ab390a9
+--- /dev/null
++++ b/packages/app/studio/src/project/ProjectOrder.test.ts
+@@ -0,0 +1,56 @@
++import {describe, expect, it} from "vitest"
++import {UUID} from "@opendaw/lib-std"
++import {ProjectOrder} from "./ProjectOrder"
++
++const project = (n: number, modified: string) => ({
++    uuid: UUID.parse(`00000000-0000-0000-0000-00000000000${n}`), meta: {modified}
++})
++const id = (n: number) => UUID.toString(UUID.parse(`00000000-0000-0000-0000-00000000000${n}`))
++const names = (list: ReadonlyArray<{ uuid: UUID.Bytes }>) => list.map(({uuid}) => UUID.toString(uuid).slice(-1))
++
++describe("ProjectOrder.sort", () => {
++    const a = project(1, "2026-11-01T10:00:00Z")
++    const b = project(2, "2026-11-03T10:00:00Z")
++    const c = project(3, "2026-11-02T10:00:00Z")
++
++    it("puts the newest first when no order was saved", () => {
++        expect(names(ProjectOrder.sort([a, b, c], []))).toEqual(["2", "3", "1"])
++    })
++
++    it("follows the saved order", () => {
++        expect(names(ProjectOrder.sort([a, b, c], [id(1), id(3), id(2)]))).toEqual(["1", "3", "2"])
++    })
++
++    it("puts a project that is not in the saved order on top", () => {
++        expect(names(ProjectOrder.sort([a, b, c], [id(1), id(3)]))).toEqual(["2", "1", "3"])
++    })
++
++    it("ignores saved ids of projects that no longer exist", () => {
++        expect(names(ProjectOrder.sort([a, c], [id(2), id(3), id(1)]))).toEqual(["3", "1"])
++    })
++})
++
++describe("ProjectOrder.arrange", () => {
++    const list = ["a", "b", "c", "d"]
++
++    it("moves a project up and down by one place", () => {
++        expect(ProjectOrder.arrange(list, "c", "up")).toEqual(["a", "c", "b", "d"])
++        expect(ProjectOrder.arrange(list, "b", "down")).toEqual(["a", "c", "b", "d"])
++    })
++
++    it("moves a project to the top", () => {
++        expect(ProjectOrder.arrange(list, "d", "top")).toEqual(["d", "a", "b", "c"])
++    })
++
++    it("stays put at the ends and for unknown ids", () => {
++        expect(ProjectOrder.arrange(list, "a", "up")).toEqual(list)
++        expect(ProjectOrder.arrange(list, "d", "down")).toEqual(list)
++        expect(ProjectOrder.arrange(list, "a", "top")).toEqual(list)
++        expect(ProjectOrder.arrange(list, "z", "up")).toEqual(list)
++    })
++
++    it("does not change the list it was given", () => {
++        ProjectOrder.arrange(list, "d", "top")
++        expect(list).toEqual(["a", "b", "c", "d"])
++    })
++})
+diff --git a/packages/app/studio/src/project/ProjectOrder.ts b/packages/app/studio/src/project/ProjectOrder.ts
+new file mode 100644
+index 0000000..339746c
+--- /dev/null
++++ b/packages/app/studio/src/project/ProjectOrder.ts
+@@ -0,0 +1,51 @@
++import {StringComparator, UUID} from "@opendaw/lib-std"
++
++// Phone fork: the order of the projects in the dashboard list. Without a saved order the newest project comes
++// first. Once the order was changed by hand it is kept on this device (it is not synced to other devices).
++export namespace ProjectOrder {
++    const Key = "opendaw-project-order"
++
++    export type Action = "up" | "down" | "top"
++
++    export const load = (): ReadonlyArray<string> => {
++        try {
++            const parsed: unknown = JSON.parse(localStorage.getItem(Key) ?? "[]")
++            return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []
++        } catch (_error) {
++            return []
++        }
++    }
++
++    export const save = (order: ReadonlyArray<string>): void => {
++        try {localStorage.setItem(Key, JSON.stringify(order))} catch (_error) {/* storage not available */}
++    }
++
++    type Entry = { readonly uuid: UUID.Bytes, readonly meta: { readonly modified: string } }
++
++    /**
++     * Projects that are not in the saved order (new ones) come first, newest first, then the projects in the
++     * saved order. Ids in the saved order that no longer exist are ignored.
++     */
++    export const sort = <T extends Entry>(projects: ReadonlyArray<T>, order: ReadonlyArray<string> = load()): Array<T> => {
++        const position = new Map(order.map((uuid, index) => [uuid, index] as const))
++        const fresh = projects
++            .filter(({uuid}) => !position.has(UUID.toString(uuid)))
++            .toSorted((a, b) => -StringComparator(a.meta.modified, b.meta.modified))
++        const ordered = projects
++            .filter(({uuid}) => position.has(UUID.toString(uuid)))
++            .toSorted((a, b) => (position.get(UUID.toString(a.uuid)) ?? 0) - (position.get(UUID.toString(b.uuid)) ?? 0))
++        return [...fresh, ...ordered]
++    }
++
++    // The new order after moving one project of the order that is displayed right now.
++    export const arrange = (displayed: ReadonlyArray<string>, uuid: string, action: Action): Array<string> => {
++        const order = [...displayed]
++        const index = order.indexOf(uuid)
++        if (index < 0) {return order}
++        const target = action === "top" ? 0 : action === "up" ? index - 1 : index + 1
++        if (target < 0 || target >= order.length || target === index) {return order}
++        order.splice(index, 1)
++        order.splice(target, 0, uuid)
++        return order
++    }
++}
+diff --git a/packages/app/studio/src/project/ProjectRename.ts b/packages/app/studio/src/project/ProjectRename.ts
+new file mode 100644
+index 0000000..ba307cb
+--- /dev/null
++++ b/packages/app/studio/src/project/ProjectRename.ts
+@@ -0,0 +1,32 @@
++import {RuntimeNotifier, RuntimeSignal, UUID} from "@opendaw/lib-std"
++import {Project, ProjectMeta, ProjectProfile, ProjectSignals, ProjectStorage} from "@opendaw/studio-core"
++import type {StudioService} from "@/service/StudioService"
++
++// Phone fork: renames a project that is stored on this device. The name lives in two places, in the metadata file
++// and inside the project itself, and the project reads it back from inside, so the project is opened and saved.
++export const renameProject = async (service: StudioService, uuid: UUID.Bytes, name: string): Promise<void> => {
++    const trimmed = name.trim()
++    if (trimmed.length === 0) {return}
++    if (service.hasProfile && UUID.equals(service.profile.uuid, uuid)) {
++        await RuntimeNotifier.info({
++            headline: "Project is open",
++            message: "Close the project first, then rename it."
++        })
++        return
++    }
++    const [buffer, metaBuffer, cover] = await Promise.all([
++        ProjectStorage.loadProject(uuid),
++        ProjectStorage.loadMeta(uuid),
++        ProjectStorage.loadCover(uuid)
++    ])
++    const project = await Project.loadAnyVersion(service, buffer)
++    try {
++        const meta = ProjectMeta.fromJSON(JSON.parse(new TextDecoder().decode(metaBuffer)))
++        const profile = new ProjectProfile(uuid, project, meta, cover, true)
++        profile.updateMetaData("name", trimmed)
++        await profile.save()
++    } finally {
++        project.terminate()
++    }
++    RuntimeSignal.dispatch(ProjectSignals.StorageUpdated)
++}
+diff --git a/packages/app/studio/src/ui/dashboard/ActionButtons.sass b/packages/app/studio/src/ui/dashboard/ActionButtons.sass
+index cec857b..3c027f2 100644
+--- a/packages/app/studio/src/ui/dashboard/ActionButtons.sass
++++ b/packages/app/studio/src/ui/dashboard/ActionButtons.sass
+@@ -30,3 +30,17 @@ component
+       width: 1.0667em
+       height: 1.0667em
+       flex: 0 0 auto
++
++    // Sync: green when everything is in sync, red when something has to go up or come down
++    &.sync
++      &.synced
++        border-color: var(--color-green)
++        color: var(--color-green)
++
++      &.pending
++        border-color: var(--color-red)
++        color: var(--color-red)
++
++      &.busy
++        opacity: 0.6
++        pointer-events: none
+diff --git a/packages/app/studio/src/ui/dashboard/ActionButtons.tsx b/packages/app/studio/src/ui/dashboard/ActionButtons.tsx
+index 30636a1..fc90f67 100644
+--- a/packages/app/studio/src/ui/dashboard/ActionButtons.tsx
++++ b/packages/app/studio/src/ui/dashboard/ActionButtons.tsx
+@@ -1,3 +1,4 @@
++import {SyncButton} from "@/ui/dashboard/SyncButton"
+ import css from "./ActionButtons.sass?inline"
+ import {Html} from "@opendaw/lib-dom"
+ import {EmptyExec, Lifecycle} from "@opendaw/lib-std"
+@@ -15,12 +16,13 @@ type Construct = {
+     service: StudioService
+ }
+ 
+-export const ActionButtons = ({service}: Construct) => (
++export const ActionButtons = ({lifecycle, service}: Construct) => (
+     <div className={className}>
+         <button className="action" title="Empty timeline, start from a clean slate."
+                 onclick={() => service.newProject()}>
+             <Icon symbol={IconSymbol.New}/><span>New Project</span>
+         </button>
++        <SyncButton lifecycle={lifecycle} service={service}/>
+         <button className="action" title="Jam with others in real time, share a link."
+                 onclick={() => connectRoom(service)}>
+             <Icon symbol={IconSymbol.Connected}/><span>New Live Room</span>
+diff --git a/packages/app/studio/src/ui/dashboard/SyncButton.tsx b/packages/app/studio/src/ui/dashboard/SyncButton.tsx
+new file mode 100644
+index 0000000..7628177
+--- /dev/null
++++ b/packages/app/studio/src/ui/dashboard/SyncButton.tsx
+@@ -0,0 +1,96 @@
++import {createElement} from "@opendaw/lib-jsx"
++import {Lifecycle, RuntimeSignal} from "@opendaw/lib-std"
++import {IconSymbol} from "@opendaw/studio-enums"
++import {CloudBackup, CloudSyncStatus, ProjectSignals, SyncStatus} from "@opendaw/studio-core"
++import {Icon} from "@/ui/components/Icon"
++import type {StudioService} from "@/service/StudioService"
++
++type Construct = {
++    lifecycle: Lifecycle
++    service: StudioService
++}
++
++type State = "unknown" | "synced" | "pending" | "busy"
++
++const Service = "GoogleDrive" as const
++const StateClasses: ReadonlyArray<State> = ["unknown", "synced", "pending", "busy"]
++
++// Phone fork: one tap sync with Google Drive. Green: everything is in sync. Red: something has to go up, come down,
++// or needs a decision. Blue: not logged in (or no network), so nothing is known: tap to log in and sync.
++// The colour covers the projects. Samples and other resources travel with the same sync.
++export const SyncButton = ({lifecycle, service}: Construct) => {
++    const label: HTMLElement = <span>Sync</span>
++    const button: HTMLElement = (
++        <button className="action sync unknown" title="Log in to Google Drive and sync." onclick={() => void run()}>
++            <Icon symbol={IconSymbol.GoogleDrive}/>
++            {label}
++        </button>
++    )
++    let busy = false
++    let generation = 0
++    let timer: ReturnType<typeof setTimeout> | undefined
++
++    const show = (state: State, status?: SyncStatus): void => {
++        StateClasses.forEach(name => button.classList.toggle(name, name === state))
++        label.textContent = state === "busy" ? "Syncing..."
++            : state === "pending" && status !== undefined ? `Sync (${status.count})` : "Sync"
++        button.title = state === "busy" ? "Syncing with Google Drive..."
++            : state === "synced" ? "Everything is in sync with Google Drive."
++                : state === "pending" && status !== undefined
++                    ? `To upload: ${status.push.length}, to download: ${status.pull.length}, `
++                    + `to decide: ${status.decide.length}, deletions: ${status.deletions.length}. Tap to sync.`
++                    : "Log in to Google Drive and sync."
++    }
++
++    const refresh = async (): Promise<void> => {
++        if (busy) {return}
++        const current = ++generation
++        const handler = service.cloudAuthManager.peekHandler(Service)
++        if (handler === null) {
++            show("unknown")
++            return
++        }
++        try {
++            const status = await CloudSyncStatus.check(handler, Service)
++            if (current === generation && !busy) {show(status.count === 0 ? "synced" : "pending", status)}
++        } catch (error) {
++            console.warn("Sync status unavailable", error)
++            if (current === generation && !busy) {show("unknown")}
++        }
++    }
++
++    const run = async (): Promise<void> => {
++        if (busy) {return}
++        busy = true
++        show("busy")
++        try {
++            await CloudBackup.backup(service.cloudAuthManager, Service)
++        } catch (_error) {
++            // the backup already told the person what went wrong
++        } finally {
++            busy = false
++            void refresh()
++        }
++    }
++
++    const schedule = (): void => {
++        clearTimeout(timer)
++        timer = setTimeout(() => void refresh(), 800)
++    }
++    const onVisible = (): void => {if (document.visibilityState === "visible") {schedule()}}
++    const interval = setInterval(() => void refresh(), 120_000)
++    document.addEventListener("visibilitychange", onVisible)
++    lifecycle.ownAll(
++        service.cloudAuthManager.subscribeHandler(schedule),
++        RuntimeSignal.subscribe(signal => signal === ProjectSignals.StorageUpdated && schedule()),
++        {
++            terminate: () => {
++                clearInterval(interval)
++                clearTimeout(timer)
++                document.removeEventListener("visibilitychange", onVisible)
++            }
++        }
++    )
++    void refresh()
++    return button
++}
+diff --git a/packages/app/studio/src/ui/timeline/SelectionRectangle.tsx b/packages/app/studio/src/ui/timeline/SelectionRectangle.tsx
+index 8e5fa56..2f244fb 100644
+--- a/packages/app/studio/src/ui/timeline/SelectionRectangle.tsx
++++ b/packages/app/studio/src/ui/timeline/SelectionRectangle.tsx
+@@ -15,10 +15,12 @@ type Construct<T extends BoxAdapter> = {
+     locator: TimelineSelectableLocator<T>
+     xAxis: ValueAxis
+     yAxis: ValueAxis
++    // false: a drag on empty space does not draw a selection rectangle (taps still select)
++    lasso?: (event: PointerEvent) => boolean
+ }
+ 
+ export const SelectionRectangle =
+-    <T extends BoxAdapter, >({lifecycle, target, selection, locator, xAxis, yAxis}: Construct<T>) => {
++    <T extends BoxAdapter, >({lifecycle, target, selection, locator, xAxis, yAxis, lasso}: Construct<T>) => {
+         const svgRect: SVGRectElement = (
+             <rect x="0" y="0" width="0" height="0"
+                   stroke={Colors.cream}
+@@ -78,6 +80,7 @@ export const SelectionRectangle =
+                     return Option.None
+                 }
+                 selection.deselectAll()
++                if (lasso !== undefined && !lasso(event)) {return Option.None}
+                 const enclosed: Array<T> = []
+                 const selectedAdapters: SortedSet<UUID.Bytes, T> = UUID.newSet<T>(adapter => adapter.uuid)
+                 return Option.wrap({
+diff --git a/packages/app/studio/src/ui/timeline/TouchModifiers.test.ts b/packages/app/studio/src/ui/timeline/TouchModifiers.test.ts
+new file mode 100644
+index 0000000..388a702
+--- /dev/null
++++ b/packages/app/studio/src/ui/timeline/TouchModifiers.test.ts
+@@ -0,0 +1,35 @@
++import {beforeEach, describe, expect, it} from "vitest"
++import {TouchModifiers} from "./TouchModifiers"
++
++describe("TouchModifiers browse mode", () => {
++    beforeEach(() => TouchModifiers.set("move"))
++
++    it("lets a finger edit while a tool is selected", () => {
++        expect(TouchModifiers.blocksEditing({pointerType: "touch"})).toBe(false)
++        TouchModifiers.set("split")
++        expect(TouchModifiers.blocksEditing({pointerType: "touch"})).toBe(false)
++    })
++
++    it("stops a finger from editing when no tool is selected", () => {
++        TouchModifiers.set("view")
++        expect(TouchModifiers.blocksEditing({pointerType: "touch"})).toBe(true)
++    })
++
++    it("never restricts the mouse or a pen", () => {
++        TouchModifiers.set("view")
++        expect(TouchModifiers.blocksEditing({pointerType: "mouse"})).toBe(false)
++        expect(TouchModifiers.blocksEditing({pointerType: "pen"})).toBe(false)
++    })
++
++    it("tells the toolbar when the tool changes, and only when it does", () => {
++        let calls = 0
++        const subscription = TouchModifiers.subscribe(() => {calls++})
++        TouchModifiers.set("view")
++        TouchModifiers.set("view")
++        TouchModifiers.set("multi")
++        subscription.terminate()
++        TouchModifiers.set("move")
++        expect(calls).toBe(2)
++        expect(TouchModifiers.get()).toBe("move")
++    })
++})
+diff --git a/packages/app/studio/src/ui/timeline/TouchModifiers.ts b/packages/app/studio/src/ui/timeline/TouchModifiers.ts
+index a384159..42beb7b 100644
+--- a/packages/app/studio/src/ui/timeline/TouchModifiers.ts
++++ b/packages/app/studio/src/ui/timeline/TouchModifiers.ts
+@@ -4,11 +4,13 @@ import {Events} from "@opendaw/lib-dom"
+ // Phone fork: the region tools that the desktop studio reaches with the Shift, Ctrl and Alt keys.
+ // A touch screen has no keys, so the toolbar picks a tool and touch events inside the timeline then report the
+ // matching key as pressed. Nothing else in the studio has to know.
+-export type EditTool = "move" | "multi" | "split"
++// view: no tool selected. Browsing only: nothing can be moved, resized, cut or drawn with a finger.
++export type EditTool = "view" | "move" | "multi" | "split"
+ 
+ export namespace TouchModifiers {
+     // multi: Shift (add to the selection), split: Alt (cut the region in two where it is tapped)
+     const Keys: Record<EditTool, ReadonlyArray<string>> = {
++        view: [],
+         move: [],
+         multi: ["shiftKey"],
+         split: ["altKey"]
+@@ -19,6 +21,10 @@ export namespace TouchModifiers {
+ 
+     export const get = (): EditTool => current
+ 
++    // True while no tool is selected: a touch must not change the project (selecting and opening still work).
++    export const blocksEditing = (event: { readonly pointerType: string }): boolean =>
++        event.pointerType === "touch" && current === "view"
++
+     export const set = (tool: EditTool): void => {
+         if (tool === current) {return}
+         current = tool
+@@ -33,7 +39,7 @@ export namespace TouchModifiers {
+     // Only events inside `scope` are touched, so buttons and menus elsewhere never see a phantom key.
+     export const install = (view: Window, scope: HTMLElement): Terminable => {
+         const patch = (event: PointerEvent): void => {
+-            if (event.pointerType !== "touch" || current === "move") {return}
++            if (event.pointerType !== "touch" || Keys[current].length === 0) {return}
+             if (!(event.target instanceof Node) || !scope.contains(event.target)) {return}
+             for (const key of Keys[current]) {
+                 Object.defineProperty(event, key, {value: true, configurable: true})
+diff --git a/packages/app/studio/src/ui/timeline/TouchNavigation.ts b/packages/app/studio/src/ui/timeline/TouchNavigation.ts
+index 4c41359..c4efa98 100644
+--- a/packages/app/studio/src/ui/timeline/TouchNavigation.ts
++++ b/packages/app/studio/src/ui/timeline/TouchNavigation.ts
+@@ -3,6 +3,7 @@ import {Terminable} from "@opendaw/lib-std"
+ import {Events} from "@opendaw/lib-dom"
+ import {TimelineRange} from "@opendaw/studio-core"
+ import {GestureStep, pinchInterval, TouchPoint, TwoFingerGesture, visibleLength} from "./TouchGestures"
++import {TouchModifiers} from "./TouchModifiers"
+ 
+ // Phone fork: two fingers pan and zoom the timeline. The studio listens to the mouse wheel for this, which a
+ // touch screen does not have. One finger is left alone, so regions, knobs and buttons behave as before.
+@@ -30,6 +31,8 @@ export namespace TouchNavigation {
+         let anchor = 0.0
+         let startLength = 0.0
+         let cancelling = false
++        // Browsing (no tool selected): nothing can be edited, so one finger is free to scroll the project.
++        let pan: { x: number, y: number, started: boolean } | null = null
+         const debug = installDebug(view)
+ 
+         // A finger may already be dragging a region. Cancelling through the same pointercancel path the browser
+@@ -116,13 +119,29 @@ export namespace TouchNavigation {
+                     pressed.clear()
+                     gesture.reset()
+                 }
++                pan = event.isPrimary && TouchModifiers.blocksEditing(event)
++                && event.target instanceof Node && regions.contains(event.target)
++                    ? {x: event.clientX, y: event.clientY, started: false} : null
+                 pressed.set(event.pointerId, event.target ?? owner)
+                 // a finger that lands while another one is down belongs to the gesture, not to the controls below
+                 // (the pointer events already tell: a second pointer inside the timeline while another one is down)
+                 if (!event.isPrimary && pressed.size >= 2) {event.stopPropagation()}
+             }, {capture: true}),
+             Events.subscribe(owner, "pointermove", (event: PointerEvent) => {
+-                if (event.pointerType === "touch" && gesture.active) {event.stopPropagation()}
++                if (event.pointerType !== "touch") {return}
++                if (gesture.active) {
++                    pan = null
++                    event.stopPropagation()
++                    return
++                }
++                if (pan === null || !event.isPrimary) {return}
++                // a small wobble is still a tap
++                if (!pan.started && Math.hypot(event.clientX - pan.x, event.clientY - pan.y) < 8) {return}
++                pan.started = true
++                range.moveUnitBy(-(event.clientX - pan.x) * range.unitsPerPixel)
++                scrollTracksBy(-(event.clientY - pan.y))
++                pan.x = event.clientX
++                pan.y = event.clientY
+             }, {capture: true}),
+             Events.subscribe(owner, "pointerup", (event: PointerEvent) => {
+                 // the lift that ends a gesture must not count as a tap on whatever is underneath
+@@ -130,9 +149,13 @@ export namespace TouchNavigation {
+             }, {capture: true}),
+             Events.subscribe(view, "pointerup", (event: PointerEvent) => {
+                 pressed.delete(event.pointerId)
++                pan = null
+             }, {capture: true}),
+             Events.subscribe(view, "pointercancel", (event: PointerEvent) => {
+-                if (!cancelling) {pressed.delete(event.pointerId)}
++                if (!cancelling) {
++                    pressed.delete(event.pointerId)
++                    pan = null
++                }
+             }, {capture: true}),
+             {
+                 terminate: () => {
+diff --git a/packages/app/studio/src/ui/timeline/TouchToolbar.tsx b/packages/app/studio/src/ui/timeline/TouchToolbar.tsx
+index 4fc8c66..782bdd0 100644
+--- a/packages/app/studio/src/ui/timeline/TouchToolbar.tsx
++++ b/packages/app/studio/src/ui/timeline/TouchToolbar.tsx
+@@ -36,7 +36,9 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
+     const grip: HTMLElement = <div className="grip" title="Drag to move the tool bar">⋮⋮</div>
+     const element: HTMLElement = <div className={className}>{grip}</div>
+     Tools.forEach(({tool, label, title}) => {
+-        const button: HTMLElement = <button type="button" title={title} onclick={() => TouchModifiers.set(tool)}>{label}</button>
++        // tapping the tool that is on switches it off: no tool selected = browse only, nothing can be changed
++        const button: HTMLElement = <button type="button" title={`${title}. Tap again to switch it off.`}
++                                            onclick={() => TouchModifiers.set(TouchModifiers.get() === tool ? "view" : tool)}>{label}</button>
+         buttons.set(tool, button)
+         element.appendChild(button)
+     })
+diff --git a/packages/app/studio/src/ui/timeline/tracks/audio-unit/regions/RegionCapturing.ts b/packages/app/studio/src/ui/timeline/tracks/audio-unit/regions/RegionCapturing.ts
+index 8ab6d28..40a672a 100644
+--- a/packages/app/studio/src/ui/timeline/tracks/audio-unit/regions/RegionCapturing.ts
++++ b/packages/app/studio/src/ui/timeline/tracks/audio-unit/regions/RegionCapturing.ts
+@@ -22,6 +22,9 @@ export type RegionCaptureTarget =
+     | { type: "region", part: "fading-out", region: AudioRegionBoxAdapter }
+     | { type: "track", track: TrackContext }
+ 
++// Phone fork: the fade handles (the dots at the top of an audio region) are 3px wide for a mouse. A fingertip needs more.
++const FadeHandleRadius: number = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches ? 14 : 3
++
+ export namespace RegionCapturing {
+     export const create = (element: Element, manager: TracksManager, range: TimelineRange, audioUnitFreeze: AudioUnitFreeze) =>
+         new ElementCapturing<RegionCaptureTarget>(element, {
+@@ -55,7 +58,7 @@ export namespace RegionCapturing {
+                     const x1 = range.unitToX(region.complete)
+                     if (isInstanceOf(region, AudioRegionBoxAdapter)) {
+                         const {fading} = region
+-                        const handleRadius = 3
++                        const handleRadius = FadeHandleRadius
+                         const handleY = track.position + RegionLabel.labelHeight()
+                         const fadeInX = range.unitToX(region.position + fading.in)
+                         const fadeOutX = range.unitToX(region.position + region.duration - fading.out)
+diff --git a/packages/app/studio/src/ui/timeline/tracks/audio-unit/regions/RegionsArea.tsx b/packages/app/studio/src/ui/timeline/tracks/audio-unit/regions/RegionsArea.tsx
+index 1916311..525fe00 100644
+--- a/packages/app/studio/src/ui/timeline/tracks/audio-unit/regions/RegionsArea.tsx
++++ b/packages/app/studio/src/ui/timeline/tracks/audio-unit/regions/RegionsArea.tsx
+@@ -31,6 +31,7 @@ import {Dialogs} from "@/ui/components/dialogs"
+ import {ClipboardManager, ElementCapturing, RegionsClipboard, TimelineRange} from "@opendaw/studio-core"
+ import {RegionsShortcuts} from "@/ui/shortcuts/RegionsShortcuts"
+ import {WheelScaling} from "@/ui/timeline/WheelScaling"
++import {TouchModifiers} from "@/ui/timeline/TouchModifiers"
+ import {moveByWheelPixels} from "@/ui/timeline/editors/WheelScroll"
+ 
+ const className = Html.adoptStyleSheet(css, "RegionsArea")
+@@ -160,6 +161,8 @@ export const RegionsArea = ({lifecycle, service, manager, scrollModel, scrollCon
+                     service.panelLayout.showIfAvailable(PanelType.ContentEditor)
+                 })
+             } else if (target.type === "track") {
++                // browsing: a double tap on an empty lane must not create a region
++                if (TouchModifiers.blocksEditing(event)) {return}
+                 if (target.track.audioUnitBoxAdapter.mapOr(unit => audioUnitFreeze.isFrozen(unit), false)) {return}
+                 const {trackBoxAdapter} = target.track
+                 const x = event.clientX - element.getBoundingClientRect().left
+@@ -208,6 +211,7 @@ export const RegionsArea = ({lifecycle, service, manager, scrollModel, scrollCon
+     )
+     element.appendChild(
+         <SelectionRectangle target={element}
++                            lasso={event => !TouchModifiers.blocksEditing(event)}
+                             lifecycle={lifecycle}
+                             selection={regionSelection}
+                             locator={regionLocator}
+@@ -285,6 +289,8 @@ export const RegionsArea = ({lifecycle, service, manager, scrollModel, scrollCon
+             leave: () => markerPosition.setValue(null)
+         }),
+         Dragging.attach(element, (event: PointerEvent) => {
++                // browsing (no tool selected): selecting works, moving, resizing, looping and fading do not
++                if (TouchModifiers.blocksEditing(event)) {return Option.None}
+                 const target: Nullable<RegionCaptureTarget> = capturing.captureEvent(event)
+                 if (target === null || target.type !== "region") {return Option.None}
+                 const clientRect = element.getBoundingClientRect()
+diff --git a/packages/app/studio/src/ui/workspace/PanelContents.tsx b/packages/app/studio/src/ui/workspace/PanelContents.tsx
+index 806a497..ca55e74 100644
+--- a/packages/app/studio/src/ui/workspace/PanelContents.tsx
++++ b/packages/app/studio/src/ui/workspace/PanelContents.tsx
+@@ -1,4 +1,4 @@
+-import {Lifecycle, Maps} from "@opendaw/lib-std"
++import {Lifecycle, Maps, Terminable} from "@opendaw/lib-std"
+ import {JsxValue} from "@opendaw/lib-jsx"
+ import {PanelType} from "@/ui/workspace/PanelType.ts"
+ import {PanelContent} from "@/ui/workspace/PanelContent.tsx"
+@@ -17,6 +17,16 @@ export class PanelContents {
+         this.#contents = new Map()
+     }
+ 
++    readonly #layoutObservers = new Set<() => void>()
++
++    // Called after a panel was minimized, restored or popped out, once its own size was set.
++    subscribeLayoutChange(observer: () => void): Terminable {
++        this.#layoutObservers.add(observer)
++        return {terminate: () => {this.#layoutObservers.delete(observer)}}
++    }
++
++    notifyLayoutChange(): void {this.#layoutObservers.forEach(observer => observer())}
++
+     isClosed(content: Workspace.Content): boolean {
+         return content.type === "panel" && (content.isMinimized || this.getByType(content.panelType).isPopout)
+     }
+diff --git a/packages/app/studio/src/ui/workspace/PanelPlaceholder.tsx b/packages/app/studio/src/ui/workspace/PanelPlaceholder.tsx
+index 9f32d0c..8918db3 100644
+--- a/packages/app/studio/src/ui/workspace/PanelPlaceholder.tsx
++++ b/packages/app/studio/src/ui/workspace/PanelPlaceholder.tsx
+@@ -68,6 +68,7 @@ export const PanelPlaceholder =
+             } else {
+                 flexible.forEach(({style, constrains}) => style.flexGrow = constrains.flex.toString())
+             }
++            panelContents.notifyLayoutChange()
+         }
+ 
+         const popupLabel: Element = (
+diff --git a/packages/app/studio/src/ui/workspace/WorkspaceBuilder.tsx b/packages/app/studio/src/ui/workspace/WorkspaceBuilder.tsx
+index 104aed8..df6445f 100644
+--- a/packages/app/studio/src/ui/workspace/WorkspaceBuilder.tsx
++++ b/packages/app/studio/src/ui/workspace/WorkspaceBuilder.tsx
+@@ -3,6 +3,7 @@ import {PanelPlaceholder} from "@/ui/workspace/PanelPlaceholder.tsx"
+ import {PanelResizer} from "@/ui/workspace/PanelResizer.tsx"
+ import {PanelContents} from "@/ui/workspace/PanelContents.tsx"
+ import {ContentGlue} from "@/ui/workspace/ContentGlue.ts"
++import {AxisProperty} from "@/ui/workspace/AxisProperty.ts"
+ import {isDefined, Iterables, Lifecycle, Nullable, ObservableValue, Unhandled} from "@opendaw/lib-std"
+ import {RoomAwareness} from "@/service/RoomAwareness"
+ import {Html} from "@opendaw/lib-dom"
+@@ -16,6 +17,36 @@ export namespace WorkspaceBuilder {
+                                 roomAwareness: ObservableValue<Nullable<RoomAwareness>>) => {
+         Html.empty(element)
+         if (screenKey === null) {return}
++        const isEveryClosed = (content: Workspace.Content): boolean =>
++            content.type === "panel" ? panelContents.isClosed(content) : content.contents.every(isEveryClosed)
++        // Phone fork: when every panel of a column is minimized (Timeline, Editor, Devices) the column shrinks to
++        // just its title bars, and the panels beside it (the Mixer) take all the space that is left, without the
++        // usual maximum width.
++        const CollapsedSize = 132
++        const rebalance = (glue: ContentGlue, siblings: ReadonlyArray<ContentGlue>, orientation: Workspace.Orientation) => {
++            const property = AxisProperty[orientation]
++            const othersOpen = siblings.some(other => other !== glue
++                && other.content.constrains.type === "flex" && !isEveryClosed(other.content))
++            const collapsed = isEveryClosed(glue.content) && othersOpen
++            if (collapsed) {
++                glue.element.style.flexGrow = "0"
++                glue.element.style[property.minStyle] = glue.element.style[property.maxStyle] = `${CollapsedSize}px`
++            } else {
++                glue.element.style[property.minStyle] = ""
++                glue.element.style[property.maxStyle] = ""
++            }
++            const open = siblings.filter(({content}) => content.constrains.type === "flex"
++                && !(content === glue.content ? collapsed : isEveryClosed(content)))
++            open.forEach(({content, element}) => {
++                const {constrains} = content
++                if (constrains.type !== "flex") {return}
++                element.style.flexGrow = open.length === 1 ? "1" : constrains.flex.toString()
++                if (content.type === "panel") {
++                    element.style[property.maxStyle] =
++                        `${collapsed ? Number.MAX_SAFE_INTEGER : (constrains.maxSize ?? Number.MAX_SAFE_INTEGER)}px`
++                }
++            })
++        }
+         const build = (container: HTMLElement,
+                        siblings: ContentGlue[],
+                        content: Workspace.Content,
+@@ -46,7 +77,12 @@ export namespace WorkspaceBuilder {
+                     return Unhandled(content)
+                 }
+             })()
+-            siblings.push({element, content})
++            const glue: ContentGlue = {element, content}
++            siblings.push(glue)
++            if (content.type === "layout" && orientation === "horizontal") {
++                lifecycle.own(panelContents.subscribeLayoutChange(() => rebalance(glue, siblings, orientation)))
++                rebalance(glue, siblings, orientation)
++            }
+             appendChildren(container, element)
+             if (content.constrains.type === "flex" && isDefined(next) && next.constrains.type === "flex") {
+                 container.appendChild(
+diff --git a/packages/studio/core/src/AudioContexts.ts b/packages/studio/core/src/AudioContexts.ts
+index 726269b..afc0697 100644
+--- a/packages/studio/core/src/AudioContexts.ts
++++ b/packages/studio/core/src/AudioContexts.ts
+@@ -4,23 +4,53 @@ import {RuntimeNotifier} from "@opendaw/lib-std"
+ export class AudioContexts {
+     static #failureNotified: boolean = false
+ 
+-    static async resume(context: AudioContext): Promise<boolean> {
+-        if (context.state !== "suspended") {return context.state === "running"}
+-        const {status, error} = await Promises.tryCatch(context.resume())
+-        if (status === "resolved") {return true}
+-        console.warn("AudioContext.resume rejected", error, {
+-            state: context.state,
+-            sampleRate: context.sampleRate,
+-            hardwareSampleRate: await this.#probeHardwareSampleRate()
+-        })
+-        if (!this.#failureNotified) {
+-            this.#failureNotified = true
+-            RuntimeNotifier.info({
+-                headline: "Audio Device Unavailable",
+-                message: "Your browser could not start the audio device. Check your audio output settings and try again."
+-            }).then(() => {this.#failureNotified = false})
++    // Installed by the app: saves the work and reloads the page, which always brings the audio back.
++    static restart: (() => Promise<void>) | null = null
++
++    static async resume(context: AudioContext, options: { silent?: boolean } = {}): Promise<boolean> {
++        // Safari adds an "interrupted" state (another app, a call or Siri took the audio) that the typings omit
++        const state: string = context.state
++        if (state === "running") {return true}
++        if (state === "closed") {return false}
++        // resume() can stay pending for as long as the audio is taken: never wait for it forever
++        const result = await Promise.race([
++            Promises.tryCatch(context.resume()),
++            new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), 2000))
++        ])
++        if (result !== "timeout" && result.status === "rejected") {
++            console.warn("AudioContext.resume rejected", result.error, {
++                state: context.state,
++                sampleRate: context.sampleRate,
++                hardwareSampleRate: await this.#probeHardwareSampleRate()
++            })
++            if (!options.silent && !this.#failureNotified) {
++                this.#failureNotified = true
++                RuntimeNotifier.info({
++                    headline: "Audio Device Unavailable",
++                    message: "Your browser could not start the audio device. Check your audio output settings and try again."
++                }).then(() => {this.#failureNotified = false})
++            }
++            return false
+         }
+-        return false
++        const resumed: boolean = context.state === "running"
++        if (!resumed && !options.silent) {await this.#offerRestart()}
++        return resumed
++    }
++
++    // The audio is still taken after asking for it back.
++    static async #offerRestart(): Promise<void> {
++        if (this.#failureNotified) {return}
++        this.#failureNotified = true
++        const restart = this.restart
++        const approved = await RuntimeNotifier.approve({
++            headline: "Audio interrupted",
++            message: "Another app is using the audio, or iOS cut it off. Try Play again in a moment. "
++                + "If it stays silent, restart the audio: your work is saved first and comes back.",
++            approveText: restart === null ? "OK" : "Restart audio",
++            cancelText: "Not now"
++        })
++        this.#failureNotified = false
++        if (approved && restart !== null) {await restart()}
+     }
+ 
+     // The rate the browser would pick on its own, to tell a device failure from our 48kHz request being refused.
+diff --git a/packages/studio/core/src/EngineFacade.ts b/packages/studio/core/src/EngineFacade.ts
+index 33c1b0e..974544c 100644
+--- a/packages/studio/core/src/EngineFacade.ts
++++ b/packages/studio/core/src/EngineFacade.ts
+@@ -133,7 +133,7 @@ export class EngineFacade implements Engine {
+     #play(): void {
+         this.#worklet.ifSome(worklet => {
+             const context = worklet.context as AudioContext
+-            if (context.state === "suspended") {
++            if ((context.state as string) !== "running") {
+                 AudioContexts.resume(context).then(resumed => {if (resumed) {worklet.play()}})
+             } else {
+                 worklet.play()
+diff --git a/packages/studio/core/src/cloud/CloudAuthManager.ts b/packages/studio/core/src/cloud/CloudAuthManager.ts
+index 04bbfdb..760aa82 100644
+--- a/packages/studio/core/src/cloud/CloudAuthManager.ts
++++ b/packages/studio/core/src/cloud/CloudAuthManager.ts
+@@ -90,14 +90,17 @@ export class CloudAuthManager {
+     /**
+      * A handler whose login is still valid, or null. Never opens a login window, so it is safe to call from a timer.
+      */
+-    peekHandler(): CloudHandler | null {
++    peekHandler(only?: CloudService): CloudHandler | null {
+         const now = Date.now()
+         for (const [service, entry] of this.#live) {
+-            if (entry.until > now) {return entry.handler}
+-            this.#live.delete(service)
++            if (entry.until <= now) {
++                this.#live.delete(service)
++            } else if (only === undefined || only === service) {
++                return entry.handler
++            }
+         }
+         // a login from before the last reload may still be good
+-        const stored = this.#readStoredToken("GoogleDrive")
++        const stored = only === undefined || only === "GoogleDrive" ? this.#readStoredToken("GoogleDrive") : null
+         if (stored !== null) {
+             const handler = new GoogleDriveHandler(stored.token)
+             this.#live.set("GoogleDrive", {handler, until: stored.until})
+diff --git a/packages/studio/core/src/cloud/CloudBackupProjects.ts b/packages/studio/core/src/cloud/CloudBackupProjects.ts
+index 3967825..569b058 100644
+--- a/packages/studio/core/src/cloud/CloudBackupProjects.ts
++++ b/packages/studio/core/src/cloud/CloudBackupProjects.ts
+@@ -53,6 +53,18 @@ export class CloudBackupProjects {
+         return new CloudBackupProjects(cloudHandler, service, local, cloud, log).#start(progress)
+     }
+ 
++    // What the cloud holds right now: the project catalog and the deletions that were recorded for every device.
++    static async remoteState(cloudHandler: CloudHandler): Promise<{
++        catalog: Record<UUID.String, { name: string, modified: string }>,
++        tombstones: ReadonlyArray<UUID.String>
++    }> {
++        const [catalog, tombstones] = await Promise.all([
++            downloadCatalog(cloudHandler),
++            CloudBackupTombstones.read(cloudHandler, CloudBackupProjects.RemotePath)
++        ])
++        return {catalog, tombstones}
++    }
++
+     readonly #cloudHandler: CloudHandler
+     // the cloud service ("GoogleDrive", ...): every service has its own sync history
+     readonly #service: string
+diff --git a/packages/studio/core/src/cloud/CloudSyncStatus.test.ts b/packages/studio/core/src/cloud/CloudSyncStatus.test.ts
+new file mode 100644
+index 0000000..a57cb19
+--- /dev/null
++++ b/packages/studio/core/src/cloud/CloudSyncStatus.test.ts
+@@ -0,0 +1,77 @@
++import {describe, expect, it} from "vitest"
++import {CloudSyncStatus} from "./CloudSyncStatus"
++
++const A = "aaaaaaaa-0000-0000-0000-000000000001" as never
++const B = "bbbbbbbb-0000-0000-0000-000000000002" as never
++const C = "cccccccc-0000-0000-0000-000000000003" as never
++const T1 = "2026-11-15T10:00:00.000Z"
++const T2 = "2026-11-15T11:00:00.000Z"
++const T3 = "2026-11-15T12:00:00.000Z"
++
++const status = (inputs: Partial<CloudSyncStatus.Inputs>) => CloudSyncStatus.compute({
++    local: {}, cloud: {}, trashed: [], tombstones: [], bases: {}, ...inputs
++})
++
++describe("CloudSyncStatus.compute", () => {
++    it("is clean when both sides hold the same projects", () => {
++        const result = status({local: {[A]: {modified: T1}}, cloud: {[A]: {modified: T1}}, bases: {[A]: T1}})
++        expect(result.count).toBe(0)
++    })
++
++    it("is clean with nothing anywhere", () => {
++        expect(status({}).count).toBe(0)
++    })
++
++    it("counts a project only this device has as something to push", () => {
++        expect(status({local: {[A]: {modified: T1}}}).push).toEqual([A])
++    })
++
++    it("counts a project only the cloud has as something to pull", () => {
++        expect(status({cloud: {[A]: {modified: T1}}}).pull).toEqual([A])
++    })
++
++    it("pushes a project changed here and pulls one changed in the cloud", () => {
++        const result = status({
++            local: {[A]: {modified: T2}, [B]: {modified: T1}},
++            cloud: {[A]: {modified: T1}, [B]: {modified: T2}},
++            bases: {[A]: T1, [B]: T1}
++        })
++        expect(result.push).toEqual([A])
++        expect(result.pull).toEqual([B])
++    })
++
++    it("asks about a project changed on both sides, or with no history", () => {
++        const result = status({
++            local: {[A]: {modified: T2}, [B]: {modified: T2}},
++            cloud: {[A]: {modified: T3}, [B]: {modified: T3}},
++            bases: {[A]: T1}
++        })
++        expect(result.decide).toEqual([A, B])
++    })
++
++    it("does not pull a project that was deleted for good", () => {
++        expect(status({cloud: {[A]: {modified: T1}}, tombstones: [A]}).count).toBe(0)
++    })
++
++    it("flags a project deleted on another device that is still stored here", () => {
++        expect(status({local: {[A]: {modified: T1}}, tombstones: [A]}).deletions).toEqual([A])
++    })
++
++    it("flags a project deleted here that the cloud still has", () => {
++        expect(status({cloud: {[A]: {modified: T1}}, trashed: [A]}).deletions).toEqual([A])
++    })
++
++    it("flags a deletion that has not been recorded for the other devices yet, then settles", () => {
++        expect(status({trashed: [A]}).deletions).toEqual([A])
++        expect(status({trashed: [A], tombstones: [A]}).count).toBe(0)
++    })
++
++    it("adds everything up", () => {
++        const result = status({
++            local: {[A]: {modified: T2}, [C]: {modified: T1}},
++            cloud: {[A]: {modified: T1}, [B]: {modified: T1}},
++            bases: {[A]: T1}
++        })
++        expect(result.count).toBe(3) // A goes up, C goes up, B comes down
++    })
++})
+diff --git a/packages/studio/core/src/cloud/CloudSyncStatus.ts b/packages/studio/core/src/cloud/CloudSyncStatus.ts
+new file mode 100644
+index 0000000..7167626
+--- /dev/null
++++ b/packages/studio/core/src/cloud/CloudSyncStatus.ts
+@@ -0,0 +1,95 @@
++import {UUID} from "@opendaw/lib-std"
++import {ProjectStorage} from "../project/ProjectStorage"
++import {CloudHandler} from "./CloudHandler"
++import {CloudBackupProjects} from "./CloudBackupProjects"
++import {CloudSyncBase} from "./CloudSyncBase"
++
++type Stamped = { readonly modified: string }
++type Catalog = { readonly [uuid: UUID.String]: Stamped }
++
++// What a sync would do right now, without doing it. It follows the same rules as the sync itself
++// (CloudBackupProjects), so "nothing to do" here means the sync would change nothing.
++export type SyncStatus = {
++    // new or changed on this device: goes up
++    readonly push: ReadonlyArray<UUID.String>
++    // new or changed in the cloud: comes down
++    readonly pull: ReadonlyArray<UUID.String>
++    // changed on both sides, or no history to tell: the sync asks what to do
++    readonly decide: ReadonlyArray<UUID.String>
++    // deleted on one side and not yet carried over to the other: the sync asks or records it
++    readonly deletions: ReadonlyArray<UUID.String>
++    readonly count: number
++}
++
++export namespace CloudSyncStatus {
++    export type Inputs = {
++        // projects stored on this device
++        readonly local: Catalog
++        // projects listed in the cloud
++        readonly cloud: Catalog
++        // projects deleted on this device
++        readonly trashed: ReadonlyArray<UUID.String>
++        // projects deleted on any device, as recorded in the cloud
++        readonly tombstones: ReadonlyArray<UUID.String>
++        // the cloud stamp each project had at this device's last sync
++        readonly bases: { readonly [uuid: UUID.String]: string }
++    }
++
++    export const compute = ({local, cloud, trashed, tombstones, bases}: Inputs): SyncStatus => {
++        const push: Array<UUID.String> = []
++        const pull: Array<UUID.String> = []
++        const decide: Array<UUID.String> = []
++        const deletions: Array<UUID.String> = []
++        const ids = (catalog: Catalog) => Object.keys(catalog) as Array<UUID.String>
++        for (const uuid of ids(local)) {
++            const inCloud = cloud[uuid]
++            if (tombstones.includes(uuid)) {
++                deletions.push(uuid) // deleted elsewhere: the sync asks whether to delete it here too
++            } else if (inCloud === undefined) {
++                push.push(uuid)
++            } else {
++                switch (CloudSyncBase.verdict(local[uuid].modified, inCloud.modified, bases[uuid])) {
++                    case "upload":
++                        push.push(uuid)
++                        break
++                    case "download":
++                        pull.push(uuid)
++                        break
++                    case "both-changed":
++                    case "unknown-history":
++                        decide.push(uuid)
++                        break
++                }
++            }
++        }
++        for (const uuid of ids(cloud)) {
++            if (local[uuid] !== undefined || tombstones.includes(uuid)) {continue}
++            if (trashed.includes(uuid)) {
++                deletions.push(uuid) // deleted here, still in the cloud: the sync asks whether to delete it there
++            } else {
++                pull.push(uuid)
++            }
++        }
++        for (const uuid of trashed) {
++            // deleted here and already gone from the cloud: the sync records it for the other devices
++            if (cloud[uuid] === undefined && !tombstones.includes(uuid)) {deletions.push(uuid)}
++        }
++        return {push, pull, decide, deletions, count: push.length + pull.length + decide.length + deletions.length}
++    }
++
++    // Reads the two sides and computes the status. Needs a handler whose login is valid.
++    export const check = async (cloudHandler: CloudHandler, service: string): Promise<SyncStatus> => {
++        const [list, trashed, remote] = await Promise.all([
++            ProjectStorage.listProjects(),
++            ProjectStorage.loadTrashedIds(),
++            CloudBackupProjects.remoteState(cloudHandler)
++        ])
++        const local = list.reduce((record: { [uuid: UUID.String]: Stamped }, {uuid, meta}) => {
++            record[UUID.toString(uuid)] = {modified: meta.modified}
++            return record
++        }, {})
++        return compute({
++            local, cloud: remote.catalog, trashed, tombstones: remote.tombstones, bases: CloudSyncBase.load(service)
++        })
++    }
++}
+diff --git a/packages/studio/core/src/cloud/index.ts b/packages/studio/core/src/cloud/index.ts
+index 6a2ff90..665a6e8 100644
+--- a/packages/studio/core/src/cloud/index.ts
++++ b/packages/studio/core/src/cloud/index.ts
+@@ -10,3 +10,4 @@ export * from "./CloudBackupScripts"
+ export * from "./CloudSyncHooks"
+ export * from "./CloudSyncBase"
+ export * from "./CloudPresence"
++export * from "./CloudSyncStatus"
+diff --git a/packages/studio/core/src/ui/renderer/fading.ts b/packages/studio/core/src/ui/renderer/fading.ts
+index 845d8bc..6e4d67b 100644
+--- a/packages/studio/core/src/ui/renderer/fading.ts
++++ b/packages/studio/core/src/ui/renderer/fading.ts
+@@ -53,7 +53,9 @@ export namespace AudioFadingRenderer {
+             path.lineTo(x0, actualTop)
+             context.fill(path)
+         }
+-        const handleRadius = 1.5 * dpr
++        // Phone fork: a bigger dot on a touch screen, to show where a finger can take hold of the fade
++        const coarse = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches
++        const handleRadius = (coarse ? 4.5 : 1.5) * dpr
+         const x0 = Math.max(range.unitToX(startPPQN + fadeIn), range.unitToX(startPPQN)) * dpr
+         const x1 = Math.min(range.unitToX(endPPQN - fadeOut), range.unitToX(endPPQN)) * dpr
+         context.fillStyle = color
