@@ -1,0 +1,436 @@
+diff --git a/packages/app/studio/src/PageZoom.ts b/packages/app/studio/src/PageZoom.ts
+index 63c92ba..f589fd6 100644
+--- a/packages/app/studio/src/PageZoom.ts
++++ b/packages/app/studio/src/PageZoom.ts
+@@ -21,17 +21,42 @@ export namespace PageZoom {
+             requestAnimationFrame(() => {viewport.content = content})
+         }
+         const afterTyping = (): void => {setTimeout(reset, 80)}
++        // The page is wider than the screen in places (the header), and a drag, a focus or a rotation can scroll the
++        // whole app sideways with no way back (the document has no scroll bar). Put it back whenever it moves.
++        const resetScroll = (): void => {
++            const root = document.scrollingElement
++            if (window.scrollX !== 0 || window.scrollY !== 0) {window.scrollTo(0, 0)}
++            for (const element of [root, document.documentElement, document.body]) {
++                if (element !== null && (element.scrollLeft !== 0 || element.scrollTop !== 0)) {
++                    element.scrollLeft = 0
++                    element.scrollTop = 0
++                }
++            }
++        }
++        const afterRotation = (): void => {setTimeout(resetScroll, 300)}
+         // Safari's own pinch-zoom gesture events
+         document.addEventListener("gesturestart", block, {passive: false})
+         document.addEventListener("gesturechange", block, {passive: false})
+         document.addEventListener("focusout", afterTyping)
+         window.visualViewport?.addEventListener("resize", reset)
++        window.addEventListener("scroll", resetScroll, {passive: true})
++        document.body.addEventListener("scroll", resetScroll, {passive: true})
++        window.visualViewport?.addEventListener("scroll", resetScroll)
++        window.addEventListener("pointerup", resetScroll, {capture: true, passive: true})
++        window.addEventListener("orientationchange", afterRotation)
++        window.addEventListener("resize", resetScroll)
+         return {
+             terminate: () => {
+                 document.removeEventListener("gesturestart", block)
+                 document.removeEventListener("gesturechange", block)
+                 document.removeEventListener("focusout", afterTyping)
+                 window.visualViewport?.removeEventListener("resize", reset)
++                window.removeEventListener("scroll", resetScroll)
++                document.body.removeEventListener("scroll", resetScroll)
++                window.visualViewport?.removeEventListener("scroll", resetScroll)
++                window.removeEventListener("pointerup", resetScroll, {capture: true})
++                window.removeEventListener("orientationchange", afterRotation)
++                window.removeEventListener("resize", resetScroll)
+             }
+         }
+     }
+diff --git a/packages/app/studio/src/ui/header/Header.sass b/packages/app/studio/src/ui/header/Header.sass
+index 571ec38..a131f03 100644
+--- a/packages/app/studio/src/ui/header/Header.sass
++++ b/packages/app/studio/src/ui/header/Header.sass
+@@ -60,8 +60,17 @@ component
+     .no-project &
+       opacity: 0.5
+ 
+-// Touch screens: room for fingertip sized buttons
++// Touch screens: room for fingertip sized buttons. The row is wider than a phone: it scrolls sideways on its own,
++// so that reaching the controls at its right end does not drag the whole app out of place.
+ @media (pointer: coarse)
+   component
+     height: 3.25em
++    overflow-x: auto
++    overflow-y: hidden
++    scrollbar-width: none
++    touch-action: pan-x
++    overscroll-behavior: contain
++
++    &::-webkit-scrollbar
++      display: none
+ 
+diff --git a/packages/app/studio/src/ui/timeline/MuteAll.test.ts b/packages/app/studio/src/ui/timeline/MuteAll.test.ts
+new file mode 100644
+index 0000000..8dce5db
+--- /dev/null
++++ b/packages/app/studio/src/ui/timeline/MuteAll.test.ts
+@@ -0,0 +1,62 @@
++import {describe, expect, it} from "vitest"
++import {MuteAll, Mutable} from "./MuteAll"
++
++const units = (...states: Array<boolean>): Array<Mutable & { state: boolean }> => states.map((state, index) => {
++    const unit = {
++        state, id: `unit-${index}`,
++        get: () => unit.state,
++        set: (value: boolean) => {unit.state = value}
++    }
++    return unit
++})
++
++describe("MuteAll", () => {
++    it("is not 'all muted' with no tracks or with one track playing", () => {
++        const muteAll = new MuteAll()
++        expect(muteAll.isAllMuted([])).toBe(false)
++        expect(muteAll.isAllMuted(units(true, false))).toBe(false)
++    })
++
++    it("recognises when every track is muted", () => {
++        expect(new MuteAll().isAllMuted(units(true, true))).toBe(true)
++    })
++
++    it("mutes everything", () => {
++        const list = units(false, false, true)
++        new MuteAll().apply(list, true)
++        expect(list.map(unit => unit.state)).toEqual([true, true, true])
++    })
++
++    it("brings every track back to where it was", () => {
++        const muteAll = new MuteAll()
++        const list = units(false, true, false)
++        muteAll.apply(list, true)
++        muteAll.apply(list, false)
++        expect(list.map(unit => unit.state)).toEqual([false, true, false])
++    })
++
++    it("unmutes everything when nothing is known about the earlier state", () => {
++        const list = units(true, true)
++        new MuteAll().apply(list, false)
++        expect(list.map(unit => unit.state)).toEqual([false, false])
++    })
++
++    it("treats a track added in between as unmuted when restoring", () => {
++        const muteAll = new MuteAll()
++        const list = units(false, true)
++        muteAll.apply(list, true)
++        const added = units(true)
++        added[0] = Object.assign(added[0], {id: "unit-new"})
++        muteAll.apply([...list, added[0]], false)
++        expect([...list, added[0]].map(unit => unit.state)).toEqual([false, true, false])
++    })
++
++    it("forgets the earlier state after restoring", () => {
++        const muteAll = new MuteAll()
++        const list = units(true, false)
++        muteAll.apply(list, true)
++        muteAll.apply(list, false)
++        muteAll.apply(list, false)
++        expect(list.map(unit => unit.state)).toEqual([false, false])
++    })
++})
+diff --git a/packages/app/studio/src/ui/timeline/MuteAll.ts b/packages/app/studio/src/ui/timeline/MuteAll.ts
+new file mode 100644
+index 0000000..29c3086
+--- /dev/null
++++ b/packages/app/studio/src/ui/timeline/MuteAll.ts
+@@ -0,0 +1,30 @@
++// Phone fork: "mute all" for the timeline header. Mutes every track (the master output stays as it is) and
++// remembers what each track was before, so that pressing it again brings every track back to where it was.
++export type Mutable = {
++    readonly id: string
++    get(): boolean
++    set(value: boolean): void
++}
++
++export class MuteAll {
++    readonly #before = new Map<string, boolean>()
++
++    // True when there is at least one track and all of them are muted.
++    isAllMuted(units: ReadonlyArray<Mutable>): boolean {
++        return units.length > 0 && units.every(unit => unit.get())
++    }
++
++    // muted = true: mute everything. muted = false: restore the state from before, or unmute where nothing is known.
++    apply(units: ReadonlyArray<Mutable>, muted: boolean): void {
++        if (muted) {
++            this.#before.clear()
++            units.forEach(unit => {
++                this.#before.set(unit.id, unit.get())
++                unit.set(true)
++            })
++        } else {
++            units.forEach(unit => unit.set(this.#before.get(unit.id) ?? false))
++            this.#before.clear()
++        }
++    }
++}
+diff --git a/packages/app/studio/src/ui/timeline/TimelineHeader.tsx b/packages/app/studio/src/ui/timeline/TimelineHeader.tsx
+index 8d05b8d..5276d25 100644
+--- a/packages/app/studio/src/ui/timeline/TimelineHeader.tsx
++++ b/packages/app/studio/src/ui/timeline/TimelineHeader.tsx
+@@ -1,5 +1,5 @@
+ import css from "./TimelineHeader.sass?inline"
+-import {Lifecycle} from "@opendaw/lib-std"
++import {DefaultObservableValue, Lifecycle, UUID} from "@opendaw/lib-std"
+ import {StudioService} from "@/service/StudioService.ts"
+ import {SnapSelector} from "@/ui/timeline/SnapSelector.tsx"
+ import {createElement} from "@opendaw/lib-jsx"
+@@ -13,6 +13,7 @@ import {MenuItem} from "@opendaw/studio-core"
+ import {GlobalShortcuts} from "@/ui/shortcuts/GlobalShortcuts"
+ import {ShortcutTooltip} from "@/ui/shortcuts/ShortcutTooltip"
+ import {CreateTrack} from "@/ui/browse/CreateTrackButtons"
++import {MuteAll, Mutable} from "@/ui/timeline/MuteAll"
+ 
+ const className = Html.adoptStyleSheet(css, "TimelineHeader")
+ 
+@@ -23,6 +24,32 @@ type Construct = {
+ 
+ export const TimelineHeader = ({lifecycle, service}: Construct) => {
+     const {snapping, followCursor, primaryVisibility: {markers, tempo, signature, key, chords}, clips} = service.timeline
++    // Phone fork: mute every track with one tap, and bring them back to where they were with the next
++    const muteAll = new MuteAll()
++    const allMuted = new DefaultObservableValue<boolean>(false)
++    const units = (): ReadonlyArray<Mutable> => service.hasProfile
++        ? service.project.rootBoxAdapter.audioUnits.adapters()
++            .filter(unit => !unit.isOutput)
++            .map(unit => ({
++                id: UUID.toString(unit.uuid),
++                get: () => unit.namedParameter.mute.field.getValue(),
++                set: (value: boolean) => unit.namedParameter.mute.field.setValue(value)
++            }))
++        : []
++    let syncing = false
++    const syncAllMuted = (): void => {
++        syncing = true
++        allMuted.setValue(muteAll.isAllMuted(units()))
++        syncing = false
++    }
++    lifecycle.own(allMuted.subscribe(owner => {
++        if (syncing || !service.hasProfile) {return}
++        service.project.editing.modify(() => muteAll.apply(units(), owner.getValue()))
++    }))
++    if (service.hasProfile) {
++        lifecycle.own(service.project.editing.subscribe(syncAllMuted))
++        syncAllMuted()
++    }
+     return (
+         <div className={className}>
+             <SnapSelector lifecycle={lifecycle} snapping={snapping}/>
+@@ -42,6 +69,15 @@ export const TimelineHeader = ({lifecycle, service}: Construct) => {
+                 <Icon symbol={IconSymbol.Add} style={{fontSize: "1.25em"}}/>
+             </MenuButton>
+             <FlexSpacer/>
++            <Checkbox lifecycle={lifecycle}
++                      model={allMuted}
++                      appearance={{
++                          color: Colors.shadow,
++                          activeColor: Colors.orange,
++                          tooltip: "Mute all tracks (tap again to bring them back)"
++                      }}>
++                <Icon symbol={IconSymbol.Mute}/>
++            </Checkbox>
+             <Checkbox lifecycle={lifecycle}
+                       model={followCursor}
+                       appearance={{
+diff --git a/packages/app/studio/src/ui/timeline/TouchToolbar.tsx b/packages/app/studio/src/ui/timeline/TouchToolbar.tsx
+index 782bdd0..1a5f16e 100644
+--- a/packages/app/studio/src/ui/timeline/TouchToolbar.tsx
++++ b/packages/app/studio/src/ui/timeline/TouchToolbar.tsx
+@@ -4,6 +4,7 @@ import {createElement} from "@opendaw/lib-jsx"
+ import {Html} from "@opendaw/lib-dom"
+ import {AppUpdate} from "@/AppUpdate"
+ import {EditTool, TouchModifiers} from "./TouchModifiers"
++import {Insets, TouchToolbarPlacement} from "./TouchToolbarPlacement"
+ 
+ const className = Html.adoptStyleSheet(css, "TouchToolbar")
+ 
+@@ -56,30 +57,56 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
+                                         }}>Update</button>
+     element.appendChild(update)
+ 
+-    // --- floating: remember where it was put, and never let it leave the screen
++    // --- floating: remember where it was put, keep its corner of the screen after a rotation, and keep the grip
++    // reachable: away from the left edge (notch) and the bottom (home indicator), where a finger cannot get hold of it
++    const screen = () => ({width: window.innerWidth, height: window.innerHeight})
++    const measureInsets = (): Insets => {
++        const probe = document.createElement("div")
++        probe.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;"
++            + "padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)"
++        document.body.appendChild(probe)
++        const style = getComputedStyle(probe)
++        const insets = {
++            top: parseFloat(style.paddingTop) || 0,
++            left: parseFloat(style.paddingLeft) || 0,
++            bottom: parseFloat(style.paddingBottom) || 0
++        }
++        probe.remove()
++        return insets
++    }
+     const place = (left: number, top: number): void => {
+         const {width, height} = element.getBoundingClientRect()
+-        const x = Math.min(Math.max(0, left), Math.max(0, window.innerWidth - width))
+-        const y = Math.min(Math.max(0, top), Math.max(0, window.innerHeight - height))
+-        element.style.left = `${x}px`
+-        element.style.top = `${y}px`
++        const position = TouchToolbarPlacement.clampPosition(left, top, {width, height}, screen(), measureInsets())
++        element.style.left = `${position.left}px`
++        element.style.top = `${position.top}px`
+         element.style.right = "auto"
+         element.style.bottom = "auto"
+     }
++    // where the bar sits, as a share of the screen, so that a rotation moves it along with the screen
++    let fraction: { x: number, y: number } | null = null
+     const restore = (): void => {
+         try {
+             const saved = JSON.parse(localStorage.getItem(PositionKey) ?? "null")
+-            if (saved !== null && typeof saved.left === "number" && typeof saved.top === "number") {
+-                place(saved.left, saved.top)
++            if (saved === null) {return}
++            if (typeof saved.x === "number" && typeof saved.y === "number") {
++                fraction = {x: saved.x, y: saved.y}
++            } else if (typeof saved.left === "number" && typeof saved.top === "number") {
++                fraction = TouchToolbarPlacement.toFraction(saved.left, saved.top, screen()) // saved by an older version
++            }
++            if (fraction !== null) {
++                const {left, top} = TouchToolbarPlacement.fromFraction(fraction, screen())
++                place(left, top)
+             }
+         } catch (_error) {/* nothing saved, or storage not available: keep the default corner */}
+     }
+     let drag: { x: number, y: number, left: number, top: number } | null = null
+-    const keepOnScreen = () => {
+-        if (element.style.left === "") {return}
+-        const {left, top} = element.getBoundingClientRect()
++    const reshape = (): void => {
++        if (fraction === null) {return}
++        const {left, top} = TouchToolbarPlacement.fromFraction(fraction, screen())
+         place(left, top)
+     }
++    // iOS reports the new screen size a moment after the rotation
++    const afterRotation = (): void => {setTimeout(reshape, 300)}
+     grip.addEventListener("pointerdown", (event: PointerEvent) => {
+         event.preventDefault()
+         event.stopPropagation()
+@@ -95,11 +122,13 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
+         if (drag === null) {return}
+         drag = null
+         const {left, top} = element.getBoundingClientRect()
+-        try {localStorage.setItem(PositionKey, JSON.stringify({left, top}))} catch (_error) {/* not saved */}
++        fraction = TouchToolbarPlacement.toFraction(left, top, screen())
++        try {localStorage.setItem(PositionKey, JSON.stringify(fraction))} catch (_error) {/* not saved */}
+     }
+     grip.addEventListener("pointerup", drop)
+     grip.addEventListener("pointercancel", drop)
+-    window.addEventListener("resize", keepOnScreen)
++    window.addEventListener("resize", reshape)
++    window.addEventListener("orientationchange", afterRotation)
+     // once it is in the page it has a size, so the saved position can be clamped properly
+     requestAnimationFrame(restore)
+ 
+@@ -111,7 +140,12 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
+     lifecycle.ownAll(
+         TouchModifiers.subscribe(refresh),
+         AppUpdate.subscribe(refresh),
+-        {terminate: () => window.removeEventListener("resize", keepOnScreen)}
++        {
++            terminate: () => {
++                window.removeEventListener("resize", reshape)
++                window.removeEventListener("orientationchange", afterRotation)
++            }
++        }
+     )
+     return element
+ }
+diff --git a/packages/app/studio/src/ui/timeline/TouchToolbarPlacement.test.ts b/packages/app/studio/src/ui/timeline/TouchToolbarPlacement.test.ts
+new file mode 100644
+index 0000000..65aad84
+--- /dev/null
++++ b/packages/app/studio/src/ui/timeline/TouchToolbarPlacement.test.ts
+@@ -0,0 +1,47 @@
++import {describe, expect, it} from "vitest"
++import {TouchToolbarPlacement} from "./TouchToolbarPlacement"
++
++const bar = {width: 360, height: 44}
++const landscape = {width: 844, height: 390}
++const portrait = {width: 390, height: 844}
++const insets = {top: 0, left: 47, bottom: 21}
++
++describe("TouchToolbarPlacement.clampPosition", () => {
++    it("leaves a comfortable position alone", () => {
++        expect(TouchToolbarPlacement.clampPosition(200, 100, bar, landscape, insets)).toEqual({left: 200, top: 100})
++    })
++
++    it("keeps the grip away from the left edge, notch included", () => {
++        const {left} = TouchToolbarPlacement.clampPosition(0, 100, bar, landscape, insets)
++        expect(left).toBe(47 + TouchToolbarPlacement.MarginLeft)
++    })
++
++    it("keeps the bar above the home indicator", () => {
++        const {top} = TouchToolbarPlacement.clampPosition(200, 389, bar, landscape, insets)
++        expect(top + bar.height).toBeLessThanOrEqual(landscape.height - insets.bottom - TouchToolbarPlacement.MarginBottom)
++    })
++
++    it("lets the bar come close to the right edge", () => {
++        const {left} = TouchToolbarPlacement.clampPosition(2000, 100, bar, landscape, insets)
++        expect(left + bar.width).toBe(landscape.width - TouchToolbarPlacement.MarginRight)
++    })
++
++    it("does not break when the bar is wider than the screen", () => {
++        const wide = {width: 900, height: 44}
++        const result = TouchToolbarPlacement.clampPosition(300, 100, wide, portrait, insets)
++        expect(result.left).toBe(insets.left + TouchToolbarPlacement.MarginLeft)
++    })
++})
++
++describe("TouchToolbarPlacement fractions", () => {
++    it("keeps the corner of the screen after a rotation", () => {
++        const fraction = TouchToolbarPlacement.toFraction(700, 300, landscape) // bottom right of the landscape screen
++        const {left, top} = TouchToolbarPlacement.fromFraction(fraction, portrait)
++        expect(left).toBeGreaterThan(portrait.width * 0.7)
++        expect(top).toBeGreaterThan(portrait.height * 0.7)
++    })
++
++    it("survives a screen of size zero", () => {
++        expect(TouchToolbarPlacement.toFraction(10, 10, {width: 0, height: 0})).toEqual({x: 0, y: 0})
++    })
++})
+diff --git a/packages/app/studio/src/ui/timeline/TouchToolbarPlacement.ts b/packages/app/studio/src/ui/timeline/TouchToolbarPlacement.ts
+new file mode 100644
+index 0000000..972353b
+--- /dev/null
++++ b/packages/app/studio/src/ui/timeline/TouchToolbarPlacement.ts
+@@ -0,0 +1,26 @@
++// Phone fork: where the floating tool bar may sit. The grip is at its left end, so the left edge needs room for a
++// finger (the notch and the screen edge swallow touches there), and so does the bottom (home indicator). The right
++// edge does not need any.
++export type Box = { readonly width: number, readonly height: number }
++export type Insets = { readonly top: number, readonly left: number, readonly bottom: number }
++
++export namespace TouchToolbarPlacement {
++    export const MarginLeft = 56
++    export const MarginBottom = 48
++    export const MarginTop = 8
++    export const MarginRight = 8
++
++    const clamp = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), Math.max(min, max))
++
++    export const clampPosition = (left: number, top: number, bar: Box, screen: Box, insets: Insets) => ({
++        left: clamp(left, insets.left + MarginLeft, screen.width - bar.width - MarginRight),
++        top: clamp(top, insets.top + MarginTop, screen.height - bar.height - insets.bottom - MarginBottom)
++    })
++
++    // The same relative place after the screen changed shape (a rotation): the bar keeps its corner of the screen.
++    export const fromFraction = (fraction: { x: number, y: number }, screen: Box) =>
++        ({left: fraction.x * screen.width, top: fraction.y * screen.height})
++
++    export const toFraction = (left: number, top: number, screen: Box) =>
++        ({x: screen.width === 0 ? 0 : left / screen.width, y: screen.height === 0 ? 0 : top / screen.height})
++}
