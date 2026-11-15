@@ -1,3 +1,4 @@
+import {AppUpdate} from "@/AppUpdate"
 import "./main.sass"
 import mobileCss from "./mobile.sass?inline"
 import workersUrl from "@opendaw/studio-core/workers-main.js?worker&url"
@@ -18,6 +19,7 @@ const registerServiceWorker = (): void => {
     if (!import.meta.env.PROD || !("serviceWorker" in navigator)) {return}
     const base = import.meta.env.BASE_URL
     navigator.serviceWorker.register(`${base}sw.js`, {scope: base})
+        .then(registration => AppUpdate.watch(registration))
         .catch(error => console.warn("Service worker registration failed", error))
 }
 

@@ -4,6 +4,9 @@ component
   bottom: calc(env(safe-area-inset-bottom, 0px) + 40px)
   z-index: 30
   display: flex
+  flex-wrap: wrap
+  align-items: center
+  max-width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 80px)
   gap: 2px
   padding: 3px
   border-radius: 12px
@@ -13,9 +16,9 @@ component
   -webkit-user-select: none
 
   > button
-    min-width: 54px
+    min-width: 50px
     min-height: 38px
-    padding: 0 12px
+    padding: 0 10px
     border: none
     border-radius: 9px
     font-size: 13px
@@ -28,6 +31,23 @@ component
       font-weight: bold
       background-color: rgba(white, 0.85)
 
-  > button.delete
-    margin-left: 6px
-    color: #ff8a80
+    // the clipboard actions are buttons, not tools: a thin line sets them apart
+    &.action.first
+      margin-left: 6px
+      border-left: 1px solid rgba(white, 0.25)
+      border-radius: 0 9px 9px 0
+
+    &.delete
+      color: #ff8a80
+
+    &.version
+      min-width: 0
+      min-height: 0
+      padding: 0 6px
+      font-size: 10px
+      color: rgba(white, 0.35)
+
+    &.update
+      color: black
+      font-weight: bold
+      background-color: #5eead4

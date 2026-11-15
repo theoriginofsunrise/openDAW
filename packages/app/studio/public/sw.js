@@ -31,6 +31,11 @@ const precache = async () => {
 // open never loses the lazy-loaded chunks of the version it started with.
 self.addEventListener("install", event => event.waitUntil(precache()))
 
+// The page asks for the new build to take over right away (see AppUpdate.ts)
+self.addEventListener("message", event => {
+    if (event.data === "skip-waiting") {self.skipWaiting()}
+})
+
 self.addEventListener("activate", event => event.waitUntil((async () => {
     const keys = await caches.keys()
     await Promise.all(keys.filter(key => key.startsWith("opendaw-") && key !== CACHE).map(key => caches.delete(key)))

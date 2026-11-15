@@ -16,3 +16,15 @@ component
   > .locked
     opacity: 0.3
     pointer-events: none
+
+// Touch screens: the play, stop and loop buttons sit shoulder to shoulder, so an invisible extra hit area would
+// make neighbours steal each other's taps. Make the buttons themselves bigger instead.
+@media (pointer: coarse)
+  component
+    > div > label::before
+      content: none
+
+    > div > label
+      min-width: 2.5em
+      height: 2.5em
+

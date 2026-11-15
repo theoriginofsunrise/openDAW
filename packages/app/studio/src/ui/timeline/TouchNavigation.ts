@@ -140,7 +140,10 @@ export namespace TouchNavigation {
 
     // Open the studio with ?touchdebug in a Safari tab to see what the touch layer sees.
     const installDebug = (view: Window) => {
-        if (!view.location.search.includes("touchdebug")) {
+        const stored = ((): boolean => {
+            try {return view.localStorage.getItem("touchdebug") === "1"} catch (_error) {return false}
+        })()
+        if (!stored && !view.location.search.includes("touchdebug")) {
             return {
                 show: (_event: TouchEvent, _owned: number, _gesturing: boolean, _step: GestureStep) => {},
                 terminate: () => {}
