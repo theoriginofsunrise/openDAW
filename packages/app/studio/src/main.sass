@@ -21,6 +21,11 @@ html, body
   background-color: var(--color-background)
   touch-action: pan-x pan-y
 
+// Phone fork: iOS zooms the page into any text field whose text is smaller than 16px
+@media (pointer: coarse)
+  input[type=text], input[type=number], input[type=search], input[type=email], input[type=password], textarea
+    font-size: 16px
+
 // Phone fork: keep the interface out of the notch, the rounded corners and the home indicator
 body
   box-sizing: border-box

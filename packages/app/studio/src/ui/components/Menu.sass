@@ -9,6 +9,8 @@ component
   position: fixed
   pointer-events: all
   flex-direction: column
+  // a finger scrolls the menu itself (see Menu.tsx), the page must not take the gesture
+  touch-action: none
   border-collapse: collapse
   color: var(--color-bright)
   min-width: 12em
@@ -29,6 +31,7 @@ component
 
   &.overflowing
     max-height: calc(100vh - 1em)
+    max-height: calc(100dvh - 1em)
 
     > div.scroll
       display: flex

@@ -29,3 +29,10 @@ component
     text-align: right
     width: 6em
     max-width: 8em
+
+// Touch screens: below 16px iOS zooms the whole page into the field
+@media (pointer: coarse)
+  component > input
+    font-size: 16px
+    width: 9em
+

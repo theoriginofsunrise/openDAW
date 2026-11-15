@@ -2,7 +2,8 @@ import {TrackGrouping} from "../TrackGrouping"
 import {CaptureAudio, MenuItem, Project} from "@opendaw/studio-core"
 import {MonitoringDialog} from "@/ui/monitoring/MonitoringDialog"
 import {Browser} from "@opendaw/lib-dom"
-import {isInstanceOf, Option, Procedure} from "@opendaw/lib-std"
+import {Errors, isInstanceOf, Option, panic, Procedure} from "@opendaw/lib-std"
+import {Promises} from "@opendaw/lib-runtime"
 import {
     AudioUnitBoxAdapter,
     AudioUnitGroups,
@@ -19,6 +20,7 @@ import {MenuCapture} from "@/ui/timeline/tracks/audio-unit/menu/capture"
 import {MenuChannelMapping} from "@/ui/timeline/tracks/audio-unit/menu/channel-mapping"
 import {GlobalShortcuts} from "@/ui/shortcuts/GlobalShortcuts"
 import {MenuItems} from "@/ui/devices/menu-items"
+import {Surface} from "@/ui/surface/Surface"
 
 // The unit's menu. `optTrackBoxAdapter` is empty on the synthetic unit lane (a unit without a notes/audio
 // track), where only the track-scoped entries drop out — everything else acts on the unit and stays reachable.
@@ -43,6 +45,20 @@ export const installTrackHeaderMenu = (service: StudioService,
     }
     return parent.addMenuItem(
         ...TrackGrouping.groupingMenuItems(project, audioUnitBoxAdapter.box),
+        MenuItem.default({
+            label: "Rename...",
+            hidden: optTrackBoxAdapter.isEmpty()
+        }).setTriggerProcedure(guarded(() => optTrackBoxAdapter.ifSome(async track => {
+            // same text box as a double tap on the name, placed high enough to stay above the keyboard
+            const {status, error, value} = await Promises.tryCatch(Surface.get().requestFloatingTextInput(
+                {clientX: window.innerWidth * 0.35, clientY: window.innerHeight * 0.2},
+                track.targetName.unwrapOrElse("")))
+            if (status === "rejected") {
+                if (!Errors.isAbort(error)) {return panic(error)}
+            } else {
+                editing.modify(() => track.targetName = value)
+            }
+        }))),
         MenuItem.default({
             label: "Enabled",
             checked: optTrackBoxAdapter.mapOr(track => track.enabled.getValue(), false),

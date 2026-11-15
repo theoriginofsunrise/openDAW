@@ -17,7 +17,9 @@ const DevicesPanel = PanelState.create({
     icon: IconSymbol.Flask,
     panelType: PanelType.DevicePanel,
     notPopoutable: true,
-    constrains: {type: "fixed", fixedSize: 248}
+    constrains: {type: "fixed", fixedSize: 248},
+    // Phone fork: starts closed, tap the "Devices" bar to open it
+    minimized: true
 })
 const NotepadPanel = PanelState.create({
     type: "panel",

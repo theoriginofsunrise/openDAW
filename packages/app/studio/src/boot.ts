@@ -1,3 +1,4 @@
+import {ScreenWake} from "@/ScreenWake"
 import "./main.sass"
 
 // Escape hatch for AUTOMATED browser sessions (set `localStorage["opendaw-suppress-unload-guard"]`):
@@ -145,6 +146,7 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
     if (isDefined(context.playbackStats)) {
         new BufferUnderrunDetector(context.playbackStats, service.engine)
     }
+    ScreenWake.install(service.engine)
     const errorHandler = new ErrorHandler(buildInfo, () => service.recovery.createBackupCommand(),
         () => ReportNames.collectNames(service))
     service.engineErrors.subscribe(event => errorHandler.reportEngineError(event, WasmEngine.recentUpdates()))

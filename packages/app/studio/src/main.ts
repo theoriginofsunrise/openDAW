@@ -1,3 +1,4 @@
+import {PageZoom} from "@/PageZoom"
 import {AppUpdate} from "@/AppUpdate"
 import "./main.sass"
 import mobileCss from "./mobile.sass?inline"
@@ -47,6 +48,7 @@ if (Browser.isMobile() && mobileContest !== null) {
     </div>`
 } else if (window.crossOriginIsolated) {
     registerServiceWorker()
+    PageZoom.install()
     const now = Date.now()
     boot({
         workersUrl,

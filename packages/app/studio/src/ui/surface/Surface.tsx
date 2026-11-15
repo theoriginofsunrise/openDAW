@@ -226,11 +226,16 @@ export class Surface implements TerminableOwner {
 
     async requestFloatingTextInput(client: Client, value?: string): Promise<string> {
         const resolvers = Promise.withResolvers<string>()
-        this.flyout.appendChild(FloatingTextInput({
+        const element = FloatingTextInput({
             position: {x: client.clientX, y: client.clientY},
             value: value ?? "Type new value...",
             resolvers
-        }))
+        })
+        this.flyout.appendChild(element)
+        // Focus while still inside the tap that asked for it: iOS only shows the keyboard for that.
+        const field = element.querySelector("input")
+        field?.focus({preventScroll: true})
+        field?.select()
         return resolvers.promise.catch(() => value ?? "")
     }
 
