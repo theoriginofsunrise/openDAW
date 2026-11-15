@@ -4,6 +4,7 @@ import {createElement} from "@opendaw/lib-jsx"
 import {Html} from "@opendaw/lib-dom"
 import {AppUpdate} from "@/AppUpdate"
 import {EditTool, TouchModifiers} from "./TouchModifiers"
+import {Insets, TouchToolbarPlacement} from "./TouchToolbarPlacement"
 
 const className = Html.adoptStyleSheet(css, "TouchToolbar")
 
@@ -56,30 +57,56 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
                                         }}>Update</button>
     element.appendChild(update)
 
-    // --- floating: remember where it was put, and never let it leave the screen
+    // --- floating: remember where it was put, keep its corner of the screen after a rotation, and keep the grip
+    // reachable: away from the left edge (notch) and the bottom (home indicator), where a finger cannot get hold of it
+    const screen = () => ({width: window.innerWidth, height: window.innerHeight})
+    const measureInsets = (): Insets => {
+        const probe = document.createElement("div")
+        probe.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;"
+            + "padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)"
+        document.body.appendChild(probe)
+        const style = getComputedStyle(probe)
+        const insets = {
+            top: parseFloat(style.paddingTop) || 0,
+            left: parseFloat(style.paddingLeft) || 0,
+            bottom: parseFloat(style.paddingBottom) || 0
+        }
+        probe.remove()
+        return insets
+    }
     const place = (left: number, top: number): void => {
         const {width, height} = element.getBoundingClientRect()
-        const x = Math.min(Math.max(0, left), Math.max(0, window.innerWidth - width))
-        const y = Math.min(Math.max(0, top), Math.max(0, window.innerHeight - height))
-        element.style.left = `${x}px`
-        element.style.top = `${y}px`
+        const position = TouchToolbarPlacement.clampPosition(left, top, {width, height}, screen(), measureInsets())
+        element.style.left = `${position.left}px`
+        element.style.top = `${position.top}px`
         element.style.right = "auto"
         element.style.bottom = "auto"
     }
+    // where the bar sits, as a share of the screen, so that a rotation moves it along with the screen
+    let fraction: { x: number, y: number } | null = null
     const restore = (): void => {
         try {
             const saved = JSON.parse(localStorage.getItem(PositionKey) ?? "null")
-            if (saved !== null && typeof saved.left === "number" && typeof saved.top === "number") {
-                place(saved.left, saved.top)
+            if (saved === null) {return}
+            if (typeof saved.x === "number" && typeof saved.y === "number") {
+                fraction = {x: saved.x, y: saved.y}
+            } else if (typeof saved.left === "number" && typeof saved.top === "number") {
+                fraction = TouchToolbarPlacement.toFraction(saved.left, saved.top, screen()) // saved by an older version
+            }
+            if (fraction !== null) {
+                const {left, top} = TouchToolbarPlacement.fromFraction(fraction, screen())
+                place(left, top)
             }
         } catch (_error) {/* nothing saved, or storage not available: keep the default corner */}
     }
     let drag: { x: number, y: number, left: number, top: number } | null = null
-    const keepOnScreen = () => {
-        if (element.style.left === "") {return}
-        const {left, top} = element.getBoundingClientRect()
+    const reshape = (): void => {
+        if (fraction === null) {return}
+        const {left, top} = TouchToolbarPlacement.fromFraction(fraction, screen())
         place(left, top)
     }
+    // iOS reports the new screen size a moment after the rotation
+    const afterRotation = (): void => {setTimeout(reshape, 300)}
     grip.addEventListener("pointerdown", (event: PointerEvent) => {
         event.preventDefault()
         event.stopPropagation()
@@ -95,11 +122,13 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
         if (drag === null) {return}
         drag = null
         const {left, top} = element.getBoundingClientRect()
-        try {localStorage.setItem(PositionKey, JSON.stringify({left, top}))} catch (_error) {/* not saved */}
+        fraction = TouchToolbarPlacement.toFraction(left, top, screen())
+        try {localStorage.setItem(PositionKey, JSON.stringify(fraction))} catch (_error) {/* not saved */}
     }
     grip.addEventListener("pointerup", drop)
     grip.addEventListener("pointercancel", drop)
-    window.addEventListener("resize", keepOnScreen)
+    window.addEventListener("resize", reshape)
+    window.addEventListener("orientationchange", afterRotation)
     // once it is in the page it has a size, so the saved position can be clamped properly
     requestAnimationFrame(restore)
 
@@ -111,7 +140,12 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
     lifecycle.ownAll(
         TouchModifiers.subscribe(refresh),
         AppUpdate.subscribe(refresh),
-        {terminate: () => window.removeEventListener("resize", keepOnScreen)}
+        {
+            terminate: () => {
+                window.removeEventListener("resize", reshape)
+                window.removeEventListener("orientationchange", afterRotation)
+            }
+        }
     )
     return element
 }

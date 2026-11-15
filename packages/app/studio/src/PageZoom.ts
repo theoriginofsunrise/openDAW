@@ -21,17 +21,42 @@ export namespace PageZoom {
             requestAnimationFrame(() => {viewport.content = content})
         }
         const afterTyping = (): void => {setTimeout(reset, 80)}
+        // The page is wider than the screen in places (the header), and a drag, a focus or a rotation can scroll the
+        // whole app sideways with no way back (the document has no scroll bar). Put it back whenever it moves.
+        const resetScroll = (): void => {
+            const root = document.scrollingElement
+            if (window.scrollX !== 0 || window.scrollY !== 0) {window.scrollTo(0, 0)}
+            for (const element of [root, document.documentElement, document.body]) {
+                if (element !== null && (element.scrollLeft !== 0 || element.scrollTop !== 0)) {
+                    element.scrollLeft = 0
+                    element.scrollTop = 0
+                }
+            }
+        }
+        const afterRotation = (): void => {setTimeout(resetScroll, 300)}
         // Safari's own pinch-zoom gesture events
         document.addEventListener("gesturestart", block, {passive: false})
         document.addEventListener("gesturechange", block, {passive: false})
         document.addEventListener("focusout", afterTyping)
         window.visualViewport?.addEventListener("resize", reset)
+        window.addEventListener("scroll", resetScroll, {passive: true})
+        document.body.addEventListener("scroll", resetScroll, {passive: true})
+        window.visualViewport?.addEventListener("scroll", resetScroll)
+        window.addEventListener("pointerup", resetScroll, {capture: true, passive: true})
+        window.addEventListener("orientationchange", afterRotation)
+        window.addEventListener("resize", resetScroll)
         return {
             terminate: () => {
                 document.removeEventListener("gesturestart", block)
                 document.removeEventListener("gesturechange", block)
                 document.removeEventListener("focusout", afterTyping)
                 window.visualViewport?.removeEventListener("resize", reset)
+                window.removeEventListener("scroll", resetScroll)
+                document.body.removeEventListener("scroll", resetScroll)
+                window.visualViewport?.removeEventListener("scroll", resetScroll)
+                window.removeEventListener("pointerup", resetScroll, {capture: true})
+                window.removeEventListener("orientationchange", afterRotation)
+                window.removeEventListener("resize", resetScroll)
             }
         }
     }

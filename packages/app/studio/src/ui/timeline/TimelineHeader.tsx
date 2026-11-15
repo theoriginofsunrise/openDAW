@@ -1,5 +1,5 @@
 import css from "./TimelineHeader.sass?inline"
-import {Lifecycle} from "@opendaw/lib-std"
+import {DefaultObservableValue, Lifecycle, UUID} from "@opendaw/lib-std"
 import {StudioService} from "@/service/StudioService.ts"
 import {SnapSelector} from "@/ui/timeline/SnapSelector.tsx"
 import {createElement} from "@opendaw/lib-jsx"
@@ -13,6 +13,7 @@ import {MenuItem} from "@opendaw/studio-core"
 import {GlobalShortcuts} from "@/ui/shortcuts/GlobalShortcuts"
 import {ShortcutTooltip} from "@/ui/shortcuts/ShortcutTooltip"
 import {CreateTrack} from "@/ui/browse/CreateTrackButtons"
+import {MuteAll, Mutable} from "@/ui/timeline/MuteAll"
 
 const className = Html.adoptStyleSheet(css, "TimelineHeader")
 
@@ -23,6 +24,32 @@ type Construct = {
 
 export const TimelineHeader = ({lifecycle, service}: Construct) => {
     const {snapping, followCursor, primaryVisibility: {markers, tempo, signature, key, chords}, clips} = service.timeline
+    // Phone fork: mute every track with one tap, and bring them back to where they were with the next
+    const muteAll = new MuteAll()
+    const allMuted = new DefaultObservableValue<boolean>(false)
+    const units = (): ReadonlyArray<Mutable> => service.hasProfile
+        ? service.project.rootBoxAdapter.audioUnits.adapters()
+            .filter(unit => !unit.isOutput)
+            .map(unit => ({
+                id: UUID.toString(unit.uuid),
+                get: () => unit.namedParameter.mute.field.getValue(),
+                set: (value: boolean) => unit.namedParameter.mute.field.setValue(value)
+            }))
+        : []
+    let syncing = false
+    const syncAllMuted = (): void => {
+        syncing = true
+        allMuted.setValue(muteAll.isAllMuted(units()))
+        syncing = false
+    }
+    lifecycle.own(allMuted.subscribe(owner => {
+        if (syncing || !service.hasProfile) {return}
+        service.project.editing.modify(() => muteAll.apply(units(), owner.getValue()))
+    }))
+    if (service.hasProfile) {
+        lifecycle.own(service.project.editing.subscribe(syncAllMuted))
+        syncAllMuted()
+    }
     return (
         <div className={className}>
             <SnapSelector lifecycle={lifecycle} snapping={snapping}/>
@@ -42,6 +69,15 @@ export const TimelineHeader = ({lifecycle, service}: Construct) => {
                 <Icon symbol={IconSymbol.Add} style={{fontSize: "1.25em"}}/>
             </MenuButton>
             <FlexSpacer/>
+            <Checkbox lifecycle={lifecycle}
+                      model={allMuted}
+                      appearance={{
+                          color: Colors.shadow,
+                          activeColor: Colors.orange,
+                          tooltip: "Mute all tracks (tap again to bring them back)"
+                      }}>
+                <Icon symbol={IconSymbol.Mute}/>
+            </Checkbox>
             <Checkbox lifecycle={lifecycle}
                       model={followCursor}
                       appearance={{
