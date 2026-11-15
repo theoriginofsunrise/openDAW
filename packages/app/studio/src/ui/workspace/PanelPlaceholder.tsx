@@ -68,6 +68,7 @@ export const PanelPlaceholder =
             } else {
                 flexible.forEach(({style, constrains}) => style.flexGrow = constrains.flex.toString())
             }
+            panelContents.notifyLayoutChange()
         }
 
         const popupLabel: Element = (

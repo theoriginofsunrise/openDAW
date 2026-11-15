@@ -4,11 +4,13 @@ import {Events} from "@opendaw/lib-dom"
 // Phone fork: the region tools that the desktop studio reaches with the Shift, Ctrl and Alt keys.
 // A touch screen has no keys, so the toolbar picks a tool and touch events inside the timeline then report the
 // matching key as pressed. Nothing else in the studio has to know.
-export type EditTool = "move" | "multi" | "split"
+// view: no tool selected. Browsing only: nothing can be moved, resized, cut or drawn with a finger.
+export type EditTool = "view" | "move" | "multi" | "split"
 
 export namespace TouchModifiers {
     // multi: Shift (add to the selection), split: Alt (cut the region in two where it is tapped)
     const Keys: Record<EditTool, ReadonlyArray<string>> = {
+        view: [],
         move: [],
         multi: ["shiftKey"],
         split: ["altKey"]
@@ -18,6 +20,10 @@ export namespace TouchModifiers {
     let current: EditTool = "move"
 
     export const get = (): EditTool => current
+
+    // True while no tool is selected: a touch must not change the project (selecting and opening still work).
+    export const blocksEditing = (event: { readonly pointerType: string }): boolean =>
+        event.pointerType === "touch" && current === "view"
 
     export const set = (tool: EditTool): void => {
         if (tool === current) {return}
@@ -33,7 +39,7 @@ export namespace TouchModifiers {
     // Only events inside `scope` are touched, so buttons and menus elsewhere never see a phantom key.
     export const install = (view: Window, scope: HTMLElement): Terminable => {
         const patch = (event: PointerEvent): void => {
-            if (event.pointerType !== "touch" || current === "move") {return}
+            if (event.pointerType !== "touch" || Keys[current].length === 0) {return}
             if (!(event.target instanceof Node) || !scope.contains(event.target)) {return}
             for (const key of Keys[current]) {
                 Object.defineProperty(event, key, {value: true, configurable: true})

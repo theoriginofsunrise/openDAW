@@ -11,6 +11,11 @@ export namespace AutoBackup {
     // the folder the studio's recovery code (Recovery.ts) writes to and reads from
     const BackupPath = ".backup"
 
+    let flushNow: (() => Promise<void>) | null = null
+
+    // Writes the backup right now (before a restart, for example).
+    export const flush = async (): Promise<void> => {await flushNow?.()}
+
     export const install = (service: StudioService): Terminable => {
         let busy = false
         let written = false
@@ -40,6 +45,7 @@ export namespace AutoBackup {
             }
         }
 
+        flushNow = backup
         const onHidden = (): void => {if (document.visibilityState === "hidden") {void backup()}}
         const onPageHide = (): void => {void backup()}
         const timer = setInterval(() => void backup(), IntervalMs)

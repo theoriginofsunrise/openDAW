@@ -1,3 +1,4 @@
+import {SyncButton} from "@/ui/dashboard/SyncButton"
 import css from "./ActionButtons.sass?inline"
 import {Html} from "@opendaw/lib-dom"
 import {EmptyExec, Lifecycle} from "@opendaw/lib-std"
@@ -15,12 +16,13 @@ type Construct = {
     service: StudioService
 }
 
-export const ActionButtons = ({service}: Construct) => (
+export const ActionButtons = ({lifecycle, service}: Construct) => (
     <div className={className}>
         <button className="action" title="Empty timeline, start from a clean slate."
                 onclick={() => service.newProject()}>
             <Icon symbol={IconSymbol.New}/><span>New Project</span>
         </button>
+        <SyncButton lifecycle={lifecycle} service={service}/>
         <button className="action" title="Jam with others in real time, share a link."
                 onclick={() => connectRoom(service)}>
             <Icon symbol={IconSymbol.Connected}/><span>New Live Room</span>

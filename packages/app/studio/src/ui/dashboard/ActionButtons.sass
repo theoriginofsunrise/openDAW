@@ -30,3 +30,17 @@ component
       width: 1.0667em
       height: 1.0667em
       flex: 0 0 auto
+
+    // Sync: green when everything is in sync, red when something has to go up or come down
+    &.sync
+      &.synced
+        border-color: var(--color-green)
+        color: var(--color-green)
+
+      &.pending
+        border-color: var(--color-red)
+        color: var(--color-red)
+
+      &.busy
+        opacity: 0.6
+        pointer-events: none

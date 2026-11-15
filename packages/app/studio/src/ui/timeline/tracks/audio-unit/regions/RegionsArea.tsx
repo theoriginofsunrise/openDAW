@@ -31,6 +31,7 @@ import {Dialogs} from "@/ui/components/dialogs"
 import {ClipboardManager, ElementCapturing, RegionsClipboard, TimelineRange} from "@opendaw/studio-core"
 import {RegionsShortcuts} from "@/ui/shortcuts/RegionsShortcuts"
 import {WheelScaling} from "@/ui/timeline/WheelScaling"
+import {TouchModifiers} from "@/ui/timeline/TouchModifiers"
 import {moveByWheelPixels} from "@/ui/timeline/editors/WheelScroll"
 
 const className = Html.adoptStyleSheet(css, "RegionsArea")
@@ -160,6 +161,8 @@ export const RegionsArea = ({lifecycle, service, manager, scrollModel, scrollCon
                     service.panelLayout.showIfAvailable(PanelType.ContentEditor)
                 })
             } else if (target.type === "track") {
+                // browsing: a double tap on an empty lane must not create a region
+                if (TouchModifiers.blocksEditing(event)) {return}
                 if (target.track.audioUnitBoxAdapter.mapOr(unit => audioUnitFreeze.isFrozen(unit), false)) {return}
                 const {trackBoxAdapter} = target.track
                 const x = event.clientX - element.getBoundingClientRect().left
@@ -208,6 +211,7 @@ export const RegionsArea = ({lifecycle, service, manager, scrollModel, scrollCon
     )
     element.appendChild(
         <SelectionRectangle target={element}
+                            lasso={event => !TouchModifiers.blocksEditing(event)}
                             lifecycle={lifecycle}
                             selection={regionSelection}
                             locator={regionLocator}
@@ -285,6 +289,8 @@ export const RegionsArea = ({lifecycle, service, manager, scrollModel, scrollCon
             leave: () => markerPosition.setValue(null)
         }),
         Dragging.attach(element, (event: PointerEvent) => {
+                // browsing (no tool selected): selecting works, moving, resizing, looping and fading do not
+                if (TouchModifiers.blocksEditing(event)) {return Option.None}
                 const target: Nullable<RegionCaptureTarget> = capturing.captureEvent(event)
                 if (target === null || target.type !== "region") {return Option.None}
                 const clientRect = element.getBoundingClientRect()

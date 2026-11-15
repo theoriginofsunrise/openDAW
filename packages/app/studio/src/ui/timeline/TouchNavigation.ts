@@ -3,6 +3,7 @@ import {Terminable} from "@opendaw/lib-std"
 import {Events} from "@opendaw/lib-dom"
 import {TimelineRange} from "@opendaw/studio-core"
 import {GestureStep, pinchInterval, TouchPoint, TwoFingerGesture, visibleLength} from "./TouchGestures"
+import {TouchModifiers} from "./TouchModifiers"
 
 // Phone fork: two fingers pan and zoom the timeline. The studio listens to the mouse wheel for this, which a
 // touch screen does not have. One finger is left alone, so regions, knobs and buttons behave as before.
@@ -30,6 +31,8 @@ export namespace TouchNavigation {
         let anchor = 0.0
         let startLength = 0.0
         let cancelling = false
+        // Browsing (no tool selected): nothing can be edited, so one finger is free to scroll the project.
+        let pan: { x: number, y: number, started: boolean } | null = null
         const debug = installDebug(view)
 
         // A finger may already be dragging a region. Cancelling through the same pointercancel path the browser
@@ -116,13 +119,29 @@ export namespace TouchNavigation {
                     pressed.clear()
                     gesture.reset()
                 }
+                pan = event.isPrimary && TouchModifiers.blocksEditing(event)
+                && event.target instanceof Node && regions.contains(event.target)
+                    ? {x: event.clientX, y: event.clientY, started: false} : null
                 pressed.set(event.pointerId, event.target ?? owner)
                 // a finger that lands while another one is down belongs to the gesture, not to the controls below
                 // (the pointer events already tell: a second pointer inside the timeline while another one is down)
                 if (!event.isPrimary && pressed.size >= 2) {event.stopPropagation()}
             }, {capture: true}),
             Events.subscribe(owner, "pointermove", (event: PointerEvent) => {
-                if (event.pointerType === "touch" && gesture.active) {event.stopPropagation()}
+                if (event.pointerType !== "touch") {return}
+                if (gesture.active) {
+                    pan = null
+                    event.stopPropagation()
+                    return
+                }
+                if (pan === null || !event.isPrimary) {return}
+                // a small wobble is still a tap
+                if (!pan.started && Math.hypot(event.clientX - pan.x, event.clientY - pan.y) < 8) {return}
+                pan.started = true
+                range.moveUnitBy(-(event.clientX - pan.x) * range.unitsPerPixel)
+                scrollTracksBy(-(event.clientY - pan.y))
+                pan.x = event.clientX
+                pan.y = event.clientY
             }, {capture: true}),
             Events.subscribe(owner, "pointerup", (event: PointerEvent) => {
                 // the lift that ends a gesture must not count as a tap on whatever is underneath
@@ -130,9 +149,13 @@ export namespace TouchNavigation {
             }, {capture: true}),
             Events.subscribe(view, "pointerup", (event: PointerEvent) => {
                 pressed.delete(event.pointerId)
+                pan = null
             }, {capture: true}),
             Events.subscribe(view, "pointercancel", (event: PointerEvent) => {
-                if (!cancelling) {pressed.delete(event.pointerId)}
+                if (!cancelling) {
+                    pressed.delete(event.pointerId)
+                    pan = null
+                }
             }, {capture: true}),
             {
                 terminate: () => {

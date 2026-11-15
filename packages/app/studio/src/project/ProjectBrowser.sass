@@ -2,7 +2,7 @@ component
   flex: 1 1 0
   padding: 0 0 0 0.25em
   display: grid
-  grid-template-columns: 1fr auto auto
+  grid-template-columns: 1fr auto auto auto
   grid-template-rows: auto auto 1fr
   column-gap: 1em
   overflow: hidden
@@ -90,10 +90,16 @@ component
   component div.list
     row-gap: 0
 
+    // The scroll bar floats over the right edge of the list and is 26px wide on a touch screen: keep the trash can
+    // clear of it, or a tap on the can lands on the bar.
     .delete-icon
       box-sizing: content-box
       padding: 14px
-      margin-right: 0
+      margin-right: 32px
+
+    button
+      min-width: 36px
+      min-height: 36px
 
     div.labels
       align-items: center

@@ -15,10 +15,12 @@ type Construct<T extends BoxAdapter> = {
     locator: TimelineSelectableLocator<T>
     xAxis: ValueAxis
     yAxis: ValueAxis
+    // false: a drag on empty space does not draw a selection rectangle (taps still select)
+    lasso?: (event: PointerEvent) => boolean
 }
 
 export const SelectionRectangle =
-    <T extends BoxAdapter, >({lifecycle, target, selection, locator, xAxis, yAxis}: Construct<T>) => {
+    <T extends BoxAdapter, >({lifecycle, target, selection, locator, xAxis, yAxis, lasso}: Construct<T>) => {
         const svgRect: SVGRectElement = (
             <rect x="0" y="0" width="0" height="0"
                   stroke={Colors.cream}
@@ -78,6 +80,7 @@ export const SelectionRectangle =
                     return Option.None
                 }
                 selection.deselectAll()
+                if (lasso !== undefined && !lasso(event)) {return Option.None}
                 const enclosed: Array<T> = []
                 const selectedAdapters: SortedSet<UUID.Bytes, T> = UUID.newSet<T>(adapter => adapter.uuid)
                 return Option.wrap({

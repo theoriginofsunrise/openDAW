@@ -22,6 +22,9 @@ export type RegionCaptureTarget =
     | { type: "region", part: "fading-out", region: AudioRegionBoxAdapter }
     | { type: "track", track: TrackContext }
 
+// Phone fork: the fade handles (the dots at the top of an audio region) are 3px wide for a mouse. A fingertip needs more.
+const FadeHandleRadius: number = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches ? 14 : 3
+
 export namespace RegionCapturing {
     export const create = (element: Element, manager: TracksManager, range: TimelineRange, audioUnitFreeze: AudioUnitFreeze) =>
         new ElementCapturing<RegionCaptureTarget>(element, {
@@ -55,7 +58,7 @@ export namespace RegionCapturing {
                     const x1 = range.unitToX(region.complete)
                     if (isInstanceOf(region, AudioRegionBoxAdapter)) {
                         const {fading} = region
-                        const handleRadius = 3
+                        const handleRadius = FadeHandleRadius
                         const handleY = track.position + RegionLabel.labelHeight()
                         const fadeInX = range.unitToX(region.position + fading.in)
                         const fadeOutX = range.unitToX(region.position + region.duration - fading.out)

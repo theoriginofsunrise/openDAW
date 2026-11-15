@@ -36,7 +36,9 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
     const grip: HTMLElement = <div className="grip" title="Drag to move the tool bar">⋮⋮</div>
     const element: HTMLElement = <div className={className}>{grip}</div>
     Tools.forEach(({tool, label, title}) => {
-        const button: HTMLElement = <button type="button" title={title} onclick={() => TouchModifiers.set(tool)}>{label}</button>
+        // tapping the tool that is on switches it off: no tool selected = browse only, nothing can be changed
+        const button: HTMLElement = <button type="button" title={`${title}. Tap again to switch it off.`}
+                                            onclick={() => TouchModifiers.set(TouchModifiers.get() === tool ? "view" : tool)}>{label}</button>
         buttons.set(tool, button)
         element.appendChild(button)
     })

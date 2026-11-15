@@ -3,6 +3,7 @@ import {PanelPlaceholder} from "@/ui/workspace/PanelPlaceholder.tsx"
 import {PanelResizer} from "@/ui/workspace/PanelResizer.tsx"
 import {PanelContents} from "@/ui/workspace/PanelContents.tsx"
 import {ContentGlue} from "@/ui/workspace/ContentGlue.ts"
+import {AxisProperty} from "@/ui/workspace/AxisProperty.ts"
 import {isDefined, Iterables, Lifecycle, Nullable, ObservableValue, Unhandled} from "@opendaw/lib-std"
 import {RoomAwareness} from "@/service/RoomAwareness"
 import {Html} from "@opendaw/lib-dom"
@@ -16,6 +17,36 @@ export namespace WorkspaceBuilder {
                                 roomAwareness: ObservableValue<Nullable<RoomAwareness>>) => {
         Html.empty(element)
         if (screenKey === null) {return}
+        const isEveryClosed = (content: Workspace.Content): boolean =>
+            content.type === "panel" ? panelContents.isClosed(content) : content.contents.every(isEveryClosed)
+        // Phone fork: when every panel of a column is minimized (Timeline, Editor, Devices) the column shrinks to
+        // just its title bars, and the panels beside it (the Mixer) take all the space that is left, without the
+        // usual maximum width.
+        const CollapsedSize = 132
+        const rebalance = (glue: ContentGlue, siblings: ReadonlyArray<ContentGlue>, orientation: Workspace.Orientation) => {
+            const property = AxisProperty[orientation]
+            const othersOpen = siblings.some(other => other !== glue
+                && other.content.constrains.type === "flex" && !isEveryClosed(other.content))
+            const collapsed = isEveryClosed(glue.content) && othersOpen
+            if (collapsed) {
+                glue.element.style.flexGrow = "0"
+                glue.element.style[property.minStyle] = glue.element.style[property.maxStyle] = `${CollapsedSize}px`
+            } else {
+                glue.element.style[property.minStyle] = ""
+                glue.element.style[property.maxStyle] = ""
+            }
+            const open = siblings.filter(({content}) => content.constrains.type === "flex"
+                && !(content === glue.content ? collapsed : isEveryClosed(content)))
+            open.forEach(({content, element}) => {
+                const {constrains} = content
+                if (constrains.type !== "flex") {return}
+                element.style.flexGrow = open.length === 1 ? "1" : constrains.flex.toString()
+                if (content.type === "panel") {
+                    element.style[property.maxStyle] =
+                        `${collapsed ? Number.MAX_SAFE_INTEGER : (constrains.maxSize ?? Number.MAX_SAFE_INTEGER)}px`
+                }
+            })
+        }
         const build = (container: HTMLElement,
                        siblings: ContentGlue[],
                        content: Workspace.Content,
@@ -46,7 +77,12 @@ export namespace WorkspaceBuilder {
                     return Unhandled(content)
                 }
             })()
-            siblings.push({element, content})
+            const glue: ContentGlue = {element, content}
+            siblings.push(glue)
+            if (content.type === "layout" && orientation === "horizontal") {
+                lifecycle.own(panelContents.subscribeLayoutChange(() => rebalance(glue, siblings, orientation)))
+                rebalance(glue, siblings, orientation)
+            }
             appendChildren(container, element)
             if (content.constrains.type === "flex" && isDefined(next) && next.constrains.type === "flex") {
                 container.appendChild(

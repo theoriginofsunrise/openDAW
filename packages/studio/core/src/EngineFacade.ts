@@ -133,7 +133,7 @@ export class EngineFacade implements Engine {
     #play(): void {
         this.#worklet.ifSome(worklet => {
             const context = worklet.context as AudioContext
-            if (context.state === "suspended") {
+            if ((context.state as string) !== "running") {
                 AudioContexts.resume(context).then(resumed => {if (resumed) {worklet.play()}})
             } else {
                 worklet.play()

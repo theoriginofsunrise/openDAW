@@ -53,7 +53,9 @@ export namespace AudioFadingRenderer {
             path.lineTo(x0, actualTop)
             context.fill(path)
         }
-        const handleRadius = 1.5 * dpr
+        // Phone fork: a bigger dot on a touch screen, to show where a finger can take hold of the fade
+        const coarse = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches
+        const handleRadius = (coarse ? 4.5 : 1.5) * dpr
         const x0 = Math.max(range.unitToX(startPPQN + fadeIn), range.unitToX(startPPQN)) * dpr
         const x1 = Math.min(range.unitToX(endPPQN - fadeOut), range.unitToX(endPPQN)) * dpr
         context.fillStyle = color

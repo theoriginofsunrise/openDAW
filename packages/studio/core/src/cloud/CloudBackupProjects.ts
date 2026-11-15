@@ -53,6 +53,18 @@ export class CloudBackupProjects {
         return new CloudBackupProjects(cloudHandler, service, local, cloud, log).#start(progress)
     }
 
+    // What the cloud holds right now: the project catalog and the deletions that were recorded for every device.
+    static async remoteState(cloudHandler: CloudHandler): Promise<{
+        catalog: Record<UUID.String, { name: string, modified: string }>,
+        tombstones: ReadonlyArray<UUID.String>
+    }> {
+        const [catalog, tombstones] = await Promise.all([
+            downloadCatalog(cloudHandler),
+            CloudBackupTombstones.read(cloudHandler, CloudBackupProjects.RemotePath)
+        ])
+        return {catalog, tombstones}
+    }
+
     readonly #cloudHandler: CloudHandler
     // the cloud service ("GoogleDrive", ...): every service has its own sync history
     readonly #service: string

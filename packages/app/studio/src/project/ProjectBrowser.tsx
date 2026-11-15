@@ -8,12 +8,15 @@ import {
     Procedure,
     RuntimeNotifier,
     RuntimeSignal,
-    StringComparator,
     TimeSpan,
     UUID
 } from "@opendaw/lib-std"
 import {Icon} from "@/ui/components/Icon"
-import {IconSymbol} from "@opendaw/studio-enums"
+import {MenuButton} from "@/ui/components/MenuButton"
+import {Surface} from "@/ui/surface/Surface"
+import {ProjectOrder} from "@/project/ProjectOrder"
+import {renameProject} from "@/project/ProjectRename"
+import {Colors, IconSymbol} from "@opendaw/studio-enums"
 import {Dialogs} from "@/ui/components/dialogs"
 import {Await, createElement, DomElement, Frag, Group, JsxValue} from "@opendaw/lib-jsx"
 import {Files, Html} from "@opendaw/lib-dom"
@@ -51,6 +54,7 @@ export const ProjectBrowser = ({service, lifecycle, select, empty}: Construct) =
                 <div className="name">Name</div>
                 <div className="time">Modified</div>
                 <div/>
+                <div/>
             </header>
             <Await factory={() => ProjectStorage.listProjects()}
                    loading={() => (<div className="loader"><ThreeDots/></div>)}
@@ -68,11 +72,52 @@ export const ProjectBrowser = ({service, lifecycle, select, empty}: Construct) =
                                     onConnect={list => lifecycle.own(installScrollbars(list))}>
                                    {projects.length === 0 && isDefined(empty)
                                        ? empty
-                                       : projects
-                                       .toSorted((a, b) => -StringComparator(a.meta.modified, b.meta.modified))
+                                       : ProjectOrder.sort(projects)
                                        .map(({uuid, meta}) => {
                                            const icon: DomElement = <Icon symbol={IconSymbol.Delete}
                                                                           className="delete-icon"/>
+                                           const confirmDelete = () => Dialogs.approve({
+                                               headline: "Delete Project?",
+                                               message: `Delete "${meta.name}"? This cannot be undone.`
+                                           }).then(approved => {
+                                               if (approved) {
+                                                   service.deleteProject(uuid, meta).then(() => row.remove())
+                                               }
+                                           })
+                                           const rename = async () => {
+                                               const {status, error, value} = await Promises.tryCatch(
+                                                   Surface.get().requestFloatingTextInput({
+                                                       clientX: window.innerWidth * 0.35,
+                                                       clientY: window.innerHeight * 0.25
+                                                   }, meta.name))
+                                               if (status === "rejected") {
+                                                   if (!Errors.isAbort(error)) {console.warn(error)}
+                                                   return
+                                               }
+                                               const renamed = await Promises.tryCatch(renameProject(service, uuid, value))
+                                               if (renamed.status === "rejected") {
+                                                   console.warn(renamed.error)
+                                                   RuntimeNotifier.notify({message: "Rename failed.", icon: "Warning"})
+                                               }
+                                           }
+                                           const move = (action: ProjectOrder.Action) => {
+                                               const displayed = ProjectOrder.sort(projects).map(entry => UUID.toString(entry.uuid))
+                                               ProjectOrder.save(ProjectOrder.arrange(displayed, UUID.toString(uuid), action))
+                                               RuntimeSignal.dispatch(ProjectSignals.StorageUpdated)
+                                           }
+                                           const menu: DomElement = (
+                                               <MenuButton root={MenuItem.root().setRuntimeChildrenProcedure(parent => parent.addMenuItem(
+                                                   MenuItem.default({label: "Rename..."}).setTriggerProcedure(() => void rename()),
+                                                   MenuItem.default({label: "Move up"}).setTriggerProcedure(() => move("up")),
+                                                   MenuItem.default({label: "Move down"}).setTriggerProcedure(() => move("down")),
+                                                   MenuItem.default({label: "Move to top"}).setTriggerProcedure(() => move("top")),
+                                                   MenuItem.default({label: "Delete...", separatorBefore: true})
+                                                       .setTriggerProcedure(() => void confirmDelete())))}
+                                                           style={{minWidth: "0"}}
+                                                           appearance={{color: Colors.shadow, activeColor: Colors.cream}}>
+                                                   <Icon symbol={IconSymbol.Menu}/>
+                                               </MenuButton>
+                                           )
                                            const timeString = TimeSpan.millis(new Date(meta.modified).getTime() - now).toUnitString()
                                            const row: HTMLElement = (
                                                <Group onInit={element => filter.catchupAndSubscribe(owner => {
@@ -105,19 +150,13 @@ export const ProjectBrowser = ({service, lifecycle, select, empty}: Construct) =
                                                        <div className="name">{meta.name}</div>
                                                        <div className="time">{timeString}</div>
                                                    </div>
+                                                   {menu}
                                                    {icon}
                                                </Group>
                                            )
                                            icon.onclick = (event) => {
                                                event.stopPropagation()
-                                               Dialogs.approve({
-                                                   headline: "Delete Project?",
-                                                   message: `Delete "${meta.name}"? This cannot be undone.`
-                                               }).then(approved => {
-                                                   if (approved) {
-                                                       service.deleteProject(uuid, meta).then(() => row.remove())
-                                                   }
-                                               })
+                                               void confirmDelete()
                                            }
                                            return row
                                        })}

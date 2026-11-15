@@ -1,4 +1,4 @@
-import {Lifecycle, Maps} from "@opendaw/lib-std"
+import {Lifecycle, Maps, Terminable} from "@opendaw/lib-std"
 import {JsxValue} from "@opendaw/lib-jsx"
 import {PanelType} from "@/ui/workspace/PanelType.ts"
 import {PanelContent} from "@/ui/workspace/PanelContent.tsx"
@@ -16,6 +16,16 @@ export class PanelContents {
         this.#factory = factory
         this.#contents = new Map()
     }
+
+    readonly #layoutObservers = new Set<() => void>()
+
+    // Called after a panel was minimized, restored or popped out, once its own size was set.
+    subscribeLayoutChange(observer: () => void): Terminable {
+        this.#layoutObservers.add(observer)
+        return {terminate: () => {this.#layoutObservers.delete(observer)}}
+    }
+
+    notifyLayoutChange(): void {this.#layoutObservers.forEach(observer => observer())}
 
     isClosed(content: Workspace.Content): boolean {
         return content.type === "panel" && (content.isMinimized || this.getByType(content.panelType).isPopout)

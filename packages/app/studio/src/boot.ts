@@ -1,3 +1,4 @@
+import {AudioRecovery} from "@/AudioRecovery"
 import {CloudSafety} from "@/CloudSafety"
 import {PresenceService} from "@/PresenceService"
 import {AutoBackup} from "@/AutoBackup"
@@ -151,6 +152,11 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
     }
     ScreenWake.install(service.engine)
     AutoBackup.install(service)
+    AudioContexts.restart = async () => {
+        await AutoBackup.flush()
+        location.reload()
+    }
+    AudioRecovery.install(context)
     CloudSafety.install(service)
     PresenceService.install(service, cloudAuthManager)
     const errorHandler = new ErrorHandler(buildInfo, () => service.recovery.createBackupCommand(),

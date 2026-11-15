@@ -90,14 +90,17 @@ export class CloudAuthManager {
     /**
      * A handler whose login is still valid, or null. Never opens a login window, so it is safe to call from a timer.
      */
-    peekHandler(): CloudHandler | null {
+    peekHandler(only?: CloudService): CloudHandler | null {
         const now = Date.now()
         for (const [service, entry] of this.#live) {
-            if (entry.until > now) {return entry.handler}
-            this.#live.delete(service)
+            if (entry.until <= now) {
+                this.#live.delete(service)
+            } else if (only === undefined || only === service) {
+                return entry.handler
+            }
         }
         // a login from before the last reload may still be good
-        const stored = this.#readStoredToken("GoogleDrive")
+        const stored = only === undefined || only === "GoogleDrive" ? this.#readStoredToken("GoogleDrive") : null
         if (stored !== null) {
             const handler = new GoogleDriveHandler(stored.token)
             this.#live.set("GoogleDrive", {handler, until: stored.until})
