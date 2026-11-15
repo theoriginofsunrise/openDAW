@@ -1,3 +1,4 @@
+import {suspendAutoScroll} from "@/ui/AutoScroll"
 import {asDefined, Client, Exec, isDefined, Lifecycle, Notifier, Nullable, Option, Optional, Procedure, Subscription, UUID, Terminable} from "@opendaw/lib-std"
 import {AnimationFrame, Browser, Dragging, Events, Keyboard} from "@opendaw/lib-dom"
 import {AudioUnitGroups, Devices, UnionBoxTypes} from "@opendaw/studio-adapters"
@@ -233,18 +234,20 @@ export namespace TrackGrouping {
         handle.draggable = false
         handle.title = "Drag to move track; drop on a group bus or between tracks. Drag left to move out."
         const dragging = Dragging.attach(handle, start => {
-            if (laneDrag(start.target)) {return Option.None}
+            // A lane label starts a native drag with the mouse. A finger cannot do that, so there it only scrolls.
+            const onLaneLabel = laneDrag(start.target)
+            if (onLaneLabel && start.pointerType !== "touch") {return Option.None}
             if (start.target instanceof Element && start.target.closest("button,input,select,textarea,a,[contenteditable],.track-resizer,[data-track-controls],svg.collapse-automation")) {return Option.None}
             if (!unit.isAttached() || unit.type.getValue() === AudioUnitType.Output) {return Option.None}
             const units = project.audioUnitSelection.isSelected(unit) ? [...project.audioUnitSelection.selected()] : [unit]
-            // Touch: a quick tap selects and a quick swipe does nothing here, only a press-and-hold picks the track up.
+            // Touch: a tap selects, a swipe scrolls the tracks, a press-and-hold picks the track up.
             const touch = start.pointerType === "touch"
             let armed = !touch
-            let cancelled = false
+            let swiping = false
             let scrollFrom = start.clientY
             // the track list this header belongs to, scrolled by a swipe
             const tracks = handle.closest("[data-group-surface=timeline]")?.querySelector<HTMLElement>(":scope > .scrollable") ?? null
-            const armTimer = touch ? setTimeout(() => {
+            const armTimer = touch && !onLaneLabel ? setTimeout(() => {
                 armed = true
                 handle.style.boxShadow = "inset 0 0 0 2px #5eead4"
             }, TouchLongPress) : undefined
@@ -254,16 +257,15 @@ export namespace TrackGrouping {
             const clear = () => {if (isDefined(surface)) {markGroupDrop(surface)}}
             return Option.wrap({
                 update: event => {
-                    if (cancelled) {return}
                     if (!armed) {
-                        // moved before the hold completed: this was a swipe, not a pick-up, so scroll the tracks
-                        if (Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) > TouchSlop) {
-                            cancelled = true
+                        // moved before the hold completed: this is a swipe, not a pick-up. The tracks follow the
+                        // finger one to one: drag down and the lines move down with it.
+                        if (!swiping && Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY) > TouchSlop) {
+                            swiping = true
                             clearTimeout(armTimer)
+                            suspendAutoScroll(true)
                         }
-                        if (cancelled && tracks !== null) {
-                            tracks.scrollTop -= event.clientY - scrollFrom
-                        }
+                        if (swiping && tracks !== null) {tracks.scrollTop -= event.clientY - scrollFrom}
                         scrollFrom = event.clientY
                         return
                     }
@@ -281,13 +283,14 @@ export namespace TrackGrouping {
                     if (isDefined(surface)) {markGroupDrop(surface, target)}
                 },
                 approve: () => {
-                    if (!cancelled && moved && isDefined(target)) {
+                    if (armed && moved && isDefined(target)) {
                         const {parent, before} = target
                         project.editing.modify(() => project.grouping.move(units, parent, before))
                     }
                 },
                 finally: () => {
                     clearTimeout(armTimer)
+                    suspendAutoScroll(false)
                     handle.style.boxShadow = ""
                     clear()
                 }

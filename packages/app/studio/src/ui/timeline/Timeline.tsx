@@ -53,16 +53,15 @@ export const Timeline = ({lifecycle, service}: Construct) => {
     }))
     if (window.matchMedia("(pointer: coarse)").matches || window.location.search.includes("touchtools")) {
         const {regionSelection, editing} = project
-        // The studio's own clipboard code listens for copy, cut and paste events on the track area, exactly what
-        // Ctrl+C, Ctrl+X and Ctrl+V produce on a desktop. Raising the same events runs the same code.
-        const clipboard = (type: "copy" | "cut" | "paste") => () => {
+        // The studio's own clipboard code listens for copy and paste events on the track area, exactly what
+        // Ctrl+C and Ctrl+V produce on a desktop. Raising the same events runs the same code.
+        const clipboard = (type: "copy" | "paste") => () => {
             regionsElement.focus({preventScroll: true})
             regionsElement.dispatchEvent(new ClipboardEvent(type, {bubbles: true, cancelable: true}))
         }
         const toolbar = TouchToolbar({
             lifecycle,
             actions: {
-                cut: clipboard("cut"),
                 copy: clipboard("copy"),
                 paste: clipboard("paste"),
                 remove: () => {

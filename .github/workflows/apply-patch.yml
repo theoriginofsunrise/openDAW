@@ -1,0 +1,54 @@
+# Upload a .patch file into the "patches" folder of this repository (github.com, "Add file", "Upload files") and this
+# workflow applies it, commits the result to main and pushes. The push starts the normal deploy.
+#
+# One-time setup: a repository secret called PATCH_TOKEN, a fine-grained personal access token for THIS repository
+# with the permissions "Contents: read and write" and "Workflows: read and write". (The built-in token cannot change
+# workflow files, and its pushes would not start the deploy.) See patches/README.md.
+name: Apply uploaded patch
+
+on:
+  push:
+    branches: [main]
+    paths: ["patches/*.patch"]
+
+concurrency:
+  group: apply-patch
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the token
+        env:
+          PATCH_TOKEN: ${{ secrets.PATCH_TOKEN }}
+        run: |
+          if [ -z "$PATCH_TOKEN" ]; then
+            echo "::error::The repository secret PATCH_TOKEN is missing. See patches/README.md for the one-time setup."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.PATCH_TOKEN }}
+
+      - name: Apply the patches that were not applied yet, oldest name first
+        run: |
+          set -e
+          git config user.name "patch-bot"
+          git config user.email "patch-bot@users.noreply.github.com"
+          touch patches/applied.txt
+          count=0
+          for patch in $(ls patches/*.patch | sort); do
+            name=$(basename "$patch")
+            if grep -qx "$name" patches/applied.txt; then continue; fi
+            echo "::group::Applying $name"
+            git apply --3way --ignore-whitespace "$patch"
+            echo "$name" >> patches/applied.txt
+            git add -A
+            git commit -m "Apply $name"
+            count=$((count + 1))
+            echo "::endgroup::"
+          done
+          echo "$count patch(es) applied"
+          if [ "$count" -gt 0 ]; then git push origin HEAD:main; fi

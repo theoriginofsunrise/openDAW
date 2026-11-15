@@ -1,12 +1,13 @@
 component
   position: fixed
-  left: calc(env(safe-area-inset-left, 0px) + 64px)
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 40px)
+  // default corner: bottom right, above the scroll bar of the timeline; the grip moves it anywhere
+  right: calc(env(safe-area-inset-right, 0px) + 12px)
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 92px)
   z-index: 30
   display: flex
   flex-wrap: wrap
   align-items: center
-  max-width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 80px)
+  max-width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px)
   gap: 2px
   padding: 3px
   border-radius: 12px
@@ -14,6 +15,18 @@ component
   touch-action: none
   user-select: none
   -webkit-user-select: none
+
+  > .grip
+    min-width: 28px
+    min-height: 38px
+    display: flex
+    align-items: center
+    justify-content: center
+    font-size: 16px
+    letter-spacing: -3px
+    color: rgba(white, 0.45)
+    cursor: grab
+    touch-action: none
 
   > button
     min-width: 50px
@@ -39,13 +52,6 @@ component
 
     &.delete
       color: #ff8a80
-
-    &.version
-      min-width: 0
-      min-height: 0
-      padding: 0 6px
-      font-size: 10px
-      color: rgba(white, 0.35)
 
     &.update
       color: black

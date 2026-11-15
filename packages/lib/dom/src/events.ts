@@ -24,6 +24,8 @@ export class Events {
     static subscribeDblDwn = (eventTarget: EventTarget, listener: (event: PointerEvent) => void): Subscription => {
         let lastDownTime: number = 0.0
         return this.subscribe(eventTarget, "pointerdown", event => {
+            // Phone fork: a second finger that lands while another is down is part of a pan or pinch, not a second tap
+            if (!event.isPrimary) {return}
             const now = performance.now()
             if (now - lastDownTime < this.DOUBLE_DOWN_THRESHOLD) {
                 event.preventDefault()

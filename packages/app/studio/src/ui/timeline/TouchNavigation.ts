@@ -1,3 +1,4 @@
+import {suspendAutoScroll} from "@/ui/AutoScroll"
 import {Terminable} from "@opendaw/lib-std"
 import {Events} from "@opendaw/lib-dom"
 import {TimelineRange} from "@opendaw/studio-core"
@@ -64,6 +65,7 @@ export namespace TouchNavigation {
             debug.show(event, owned.length, gesture.active, step)
             switch (step.kind) {
                 case "start": {
+                    suspendAutoScroll(true)
                     cancelPointers()
                     anchor = range.xToUnit(step.center.x - regions.getBoundingClientRect().left)
                     startLength = range.unitRange
@@ -72,6 +74,10 @@ export namespace TouchNavigation {
                 case "move": {
                     if (event.cancelable) {event.preventDefault()}
                     apply(step.update.center, step.update.delta, step.update.scale)
+                    break
+                }
+                case "end": {
+                    suspendAutoScroll(false)
                     break
                 }
             }
@@ -112,7 +118,8 @@ export namespace TouchNavigation {
                 }
                 pressed.set(event.pointerId, event.target ?? owner)
                 // a finger that lands while another one is down belongs to the gesture, not to the controls below
-                if (!event.isPrimary && owned.length > 0) {event.stopPropagation()}
+                // (the pointer events already tell: a second pointer inside the timeline while another one is down)
+                if (!event.isPrimary && pressed.size >= 2) {event.stopPropagation()}
             }, {capture: true}),
             Events.subscribe(owner, "pointermove", (event: PointerEvent) => {
                 if (event.pointerType === "touch" && gesture.active) {event.stopPropagation()}
@@ -129,6 +136,7 @@ export namespace TouchNavigation {
             }, {capture: true}),
             {
                 terminate: () => {
+                    suspendAutoScroll(false)
                     owned.length = 0
                     pressed.clear()
                     gesture.reset()
