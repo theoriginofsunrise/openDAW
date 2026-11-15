@@ -19,6 +19,7 @@ import {CloudHandler} from "./CloudHandler"
 import {Workers} from "../Workers"
 import {ProjectPaths} from "../project/ProjectPaths"
 import {CloudSyncBase} from "./CloudSyncBase"
+import {CloudBackupTombstones} from "./CloudBackupTombstones"
 import {CloudSyncHooks} from "./CloudSyncHooks"
 
 // these get indexed in the cloud with the uuid in the cloud's catalog
@@ -70,14 +71,74 @@ export class CloudBackupProjects {
 
     async #start(progress: Progress.Handler): Promise<void> {
         const trashed = await ProjectStorage.loadTrashedIds()
-        const [reconcileProgress, uploadProgress, trashProgress, downloadProgress] =
-            Progress.splitWithWeights(progress, [0.10, 0.40, 0.10, 0.40])
+        const cloudAtStart = this.#cloud
+        const [deletionsProgress, reconcileProgress, uploadProgress, trashProgress, downloadProgress] =
+            Progress.splitWithWeights(progress, [0.05, 0.10, 0.35, 0.10, 0.40])
+        // First: what was deleted on the other devices, before anything is uploaded, so that it is not put back
+        const heldBack = new Set<UUID.String>()
+        await this.#learnDeletions(trashed, heldBack, deletionsProgress)
         const changedHere = await this.#reconcile(trashed, reconcileProgress)
         // conflict copies and updated projects changed what is stored on this device
         this.#local = await listLocal()
-        await this.#upload(changedHere, uploadProgress)
-        await this.#trash(trashed, trashProgress)
-        await this.#download(trashed, downloadProgress)
+        await this.#upload(changedHere, heldBack, uploadProgress)
+        const deletedNow = await this.#trash(trashed, trashProgress)
+        // Then: what was deleted here travels to the other devices. A project that is gone from the cloud (deleted
+        // now, or earlier) is a deletion for them too. One that is still in the cloud was only removed from this
+        // device, and the other devices keep it.
+        const deletedHere = trashed.filter(uuid => isAbsent(cloudAtStart[uuid]) || deletedNow.includes(uuid))
+        const tombstones = await CloudBackupTombstones.sync(this.#cloudHandler,
+            CloudBackupProjects.RemotePath, deletedHere, this.#log)
+        await this.#download([...trashed, ...tombstones], downloadProgress)
+    }
+
+    /**
+     * Projects that another device deleted (and removed from the cloud). They are only removed here after the
+     * person agrees, and never while open. When the person says no, the deletion is cancelled for every device.
+     */
+    async #learnDeletions(trashed: ReadonlyArray<UUID.String>, heldBack: Set<UUID.String>,
+                          progress: Progress.Handler): Promise<void> {
+        const hooks = CloudSyncHooks.get()
+        const remote = await CloudBackupTombstones.read(this.#cloudHandler, CloudBackupProjects.RemotePath)
+        const deletedElsewhere = Object.keys(this.#local)
+            .map(uuid => UUID.asString(uuid))
+            .filter(uuid => remote.includes(uuid) && !trashed.includes(uuid))
+        if (deletedElsewhere.length === 0) {
+            progress(1.0)
+            return
+        }
+        const open = deletedElsewhere.filter(uuid => hooks.isProjectOpen(uuid))
+        open.forEach(uuid => {
+            heldBack.add(uuid)
+            CloudSyncHooks.note(`'${this.#local[uuid].name}' was deleted on another device. It is open here: close it and sync again to delete it.`)
+        })
+        const closed = deletedElsewhere.filter(uuid => !open.includes(uuid))
+        if (closed.length > 0) {
+            const bases = CloudSyncBase.load(this.#service)
+            const lines = closed.map(uuid => {
+                const {name, modified} = this.#local[uuid]
+                const edited = !isAbsent(bases[uuid]) && modified !== bases[uuid]
+                return `- ${name}${edited ? " (changed on this device since the last sync)" : ""}`
+            })
+            const approved = await RuntimeNotifier.approve({
+                headline: "Deleted on another device",
+                message: `These projects were deleted on another device:\n${lines.join("\n")}\n\nDelete them on this device too?`,
+                approveText: "Delete here too",
+                cancelText: "Keep them"
+            })
+            if (approved) {
+                for (const uuid of closed) {
+                    const {name} = this.#local[uuid]
+                    await ProjectStorage.deleteProject(UUID.parse(uuid))
+                    CloudSyncBase.remove(this.#service, uuid)
+                    delete this.#local[uuid]
+                    CloudSyncHooks.note(`'${name}' was deleted here too.`)
+                }
+            } else {
+                await CloudBackupTombstones.forget(this.#cloudHandler, CloudBackupProjects.RemotePath, closed)
+                closed.forEach(uuid => CloudSyncHooks.note(`'${this.#local[uuid].name}' was kept, and is back in the cloud for the other devices.`))
+            }
+        }
+        progress(1.0)
     }
 
     /**
@@ -162,11 +223,12 @@ export class CloudBackupProjects {
         return upload
     }
 
-    async #upload(changedHere: ReadonlySet<UUID.String>, progress: Progress.Handler): Promise<void> {
+    async #upload(changedHere: ReadonlySet<UUID.String>, heldBack: ReadonlySet<UUID.String>,
+                  progress: Progress.Handler): Promise<void> {
         const local = this.#local
         const cloud = this.#cloud
         const isUnsynced = (uuid: UUID.String, cloudProject: Maybe<MetaFields>) =>
-            isAbsent(cloudProject) || changedHere.has(uuid)
+            !heldBack.has(uuid) && (isAbsent(cloudProject) || changedHere.has(uuid))
         const unsyncedProjects: ReadonlyArray<[UUID.String, MetaFields]> = Object.entries(local)
             .filter(([uuid]) => isUnsynced(UUID.asString(uuid), cloud[uuid as UUID.String]))
             .map(([uuid, localProject]) => ([UUID.asString(uuid), localProject]))
@@ -212,7 +274,9 @@ export class CloudBackupProjects {
         progress(1.0)
     }
 
-    async #trash(trashed: ReadonlyArray<UUID.String>, progress: Progress.Handler): Promise<void> {
+    async #trash(trashed: ReadonlyArray<UUID.String>,
+                 progress: Progress.Handler): Promise<ReadonlyArray<UUID.String>> {
+        let deleted: ReadonlyArray<UUID.String> = []
         const obsolete: Array<[string, MetaFields]> =
             Arrays.intersect(Object.entries(this.#cloud), trashed, ([uuid, _], trashed) => uuid === trashed)
         if (obsolete.length > 0) {
@@ -223,7 +287,7 @@ export class CloudBackupProjects {
                 cancelText: "No"
             })
             if (approved) {
-                const deleted: ReadonlyArray<UUID.String> = await Promises.sequentialAll(
+                deleted = await Promises.sequentialAll(
                     obsolete.map(([uuid, meta], index, {length}) => async () => {
                         progress((index + 1) / length)
                         const path = `${CloudBackupProjects.RemotePath}/${uuid}`
@@ -236,14 +300,15 @@ export class CloudBackupProjects {
             }
         }
         progress(1.0)
+        return deleted
     }
 
-    async #download(trashed: ReadonlyArray<UUID.String>, progress: Progress.Handler): Promise<void> {
+    async #download(exclude: ReadonlyArray<UUID.String>, progress: Progress.Handler): Promise<void> {
         const cloud = this.#cloud
         const local = this.#local
         const compareFn = ([uuidA]: [string, MetaFields], [uuidB]: [string, MetaFields]) => uuidA === uuidB
         const missingLocally = Arrays.subtract(Object.entries(cloud), Object.entries(local), compareFn)
-        const download = Arrays.subtract(missingLocally, trashed, ([projectUUID], uuid) => projectUUID === uuid)
+        const download = Arrays.subtract(missingLocally, exclude, ([projectUUID], uuid) => projectUUID === uuid)
         if (download.length === 0) {
             this.#log("No projects to download.")
             progress(1.0)

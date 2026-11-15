@@ -176,6 +176,8 @@ export const Footer = ({lifecycle, service}: Construct) => {
                                 }
                             }, "debug", "footer-show-samples-memory"))
                         }}>0</FooterItem>
+            {/* Phone fork: which build is this? The same six characters on every device means the same version. */}
+            <FooterItem title="Build">{buildInfo.uuid.slice(0, 6)}</FooterItem>
             <div style={{display: "contents"}}
                  onInit={element => {
                      const lifeSpan = lifecycle.own(new Terminator())

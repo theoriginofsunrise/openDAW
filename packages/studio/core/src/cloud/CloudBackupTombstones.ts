@@ -7,6 +7,23 @@ import {CloudHandler} from "./CloudHandler"
 export namespace CloudBackupTombstones {
     export const FileName = "tombstones.json"
 
+    export const read = (cloudHandler: CloudHandler, remotePath: string): Promise<ReadonlyArray<UUID.String>> =>
+        cloudHandler.download(`${remotePath}/${FileName}`)
+            .then(bytes => parse(bytes))
+            .catch(reason => reason instanceof Errors.FileNotFound ? [] : panic(reason))
+
+    // Takes ids back out: a deletion that was cancelled must stop travelling, or the other devices would still
+    // act on it.
+    export const forget = async (cloudHandler: CloudHandler,
+                                 remotePath: string,
+                                 uuids: ReadonlyArray<UUID.String>): Promise<void> => {
+        const current = await read(cloudHandler, remotePath)
+        const next = current.filter(uuid => !uuids.includes(uuid))
+        if (next.length === current.length) {return}
+        await cloudHandler.upload(`${remotePath}/${FileName}`,
+            new TextEncoder().encode(JSON.stringify(next)).buffer as ArrayBuffer)
+    }
+
     export const sync = async (cloudHandler: CloudHandler,
                                remotePath: string,
                                local: ReadonlyArray<UUID.String>,

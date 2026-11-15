@@ -50,6 +50,34 @@ export class CloudAuthManager {
     readonly #live = new Map<CloudService, { handler: CloudHandler, until: number }>()
     readonly #handlerObservers = new Set<() => void>()
 
+    // The login (an access token, about an hour) is kept in this browser, so that a reload, a relaunch of the app
+    // or a second tab does not ask again while the token is still good. Stays 5 minutes short of the real expiry.
+    static readonly #TokenKey = "opendaw-cloud-token"
+    static readonly #TokenLifetime = TimeSpan.minutes(55).millis()
+
+    #readStoredToken(service: CloudService): { token: string, until: number } | null {
+        try {
+            const raw = localStorage.getItem(`${CloudAuthManager.#TokenKey}:${service}`)
+            if (raw === null) {return null}
+            const stored: { token?: unknown, until?: unknown } = JSON.parse(raw)
+            return typeof stored.token === "string" && typeof stored.until === "number" && stored.until > Date.now()
+                ? {token: stored.token, until: stored.until} : null
+        } catch (_error) {
+            return null
+        }
+    }
+
+    #storeToken(service: CloudService, token: string): void {
+        try {
+            localStorage.setItem(`${CloudAuthManager.#TokenKey}:${service}`,
+                JSON.stringify({token, until: Date.now() + CloudAuthManager.#TokenLifetime}))
+        } catch (_error) {/* storage not available: the login just is not remembered */}
+    }
+
+    #forgetToken(service: CloudService): void {
+        try {localStorage.removeItem(`${CloudAuthManager.#TokenKey}:${service}`)} catch (_error) {/* nothing to forget */}
+    }
+
     #memoizedSoundCloud: Provider<Promise<SoundCloudApi>>
 
     private constructor(clientIds: ClientIds) {
@@ -67,6 +95,13 @@ export class CloudAuthManager {
         for (const [service, entry] of this.#live) {
             if (entry.until > now) {return entry.handler}
             this.#live.delete(service)
+        }
+        // a login from before the last reload may still be good
+        const stored = this.#readStoredToken("GoogleDrive")
+        if (stored !== null) {
+            const handler = new GoogleDriveHandler(stored.token)
+            this.#live.set("GoogleDrive", {handler, until: stored.until})
+            return handler
         }
         return null
     }
@@ -216,6 +251,17 @@ export class CloudAuthManager {
     }
 
     async #oauthGoogle(): Promise<CloudHandler> {
+        const stored = this.#readStoredToken("GoogleDrive")
+        if (stored !== null) {
+            const handler = new GoogleDriveHandler(stored.token)
+            const {status} = await Promises.tryCatch(handler.alive())
+            if (status === "resolved") {
+                console.debug("[CloudAuth] Reusing the stored Google login")
+                return handler
+            }
+            // revoked or expired earlier than expected: log in again
+            this.#forgetToken("GoogleDrive")
+        }
         const clientId = this.#clientIds.GoogleDrive
         const scope = "https://www.googleapis.com/auth/drive.appdata"
         const redirectUri = `${location.origin}/auth-callback.html`
@@ -224,8 +270,7 @@ export class CloudAuthManager {
             response_type: "token",
             redirect_uri: redirectUri,
             scope,
-            include_granted_scopes: "true",
-            prompt: "consent"
+            include_granted_scopes: "true"
         })
         const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
         console.debug("[CloudAuth] Opening auth window:", authUrl)
@@ -246,6 +291,7 @@ export class CloudAuthManager {
             if (data.type === "auth-callback" && isDefined(data.access_token)) {
                 try {
                     const accessToken = data.access_token
+                    this.#storeToken("GoogleDrive", accessToken)
                     resolve(await this.#createHandler("google", accessToken))
                 } catch (err) {
                     reject(err)
