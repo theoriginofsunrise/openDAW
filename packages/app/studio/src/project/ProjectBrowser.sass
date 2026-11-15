@@ -83,3 +83,19 @@ component
     padding-left: 6px
     cursor: pointer
     color: var(--color-orange)
+
+// Touch screens: the trash can is 11px wide, far too small for a fingertip. Pad it to a real touch target, which
+// also makes the rows tall enough to tap without hitting the neighbour.
+@media (pointer: coarse)
+  component div.list
+    row-gap: 0
+
+    .delete-icon
+      box-sizing: content-box
+      padding: 14px
+      margin-right: 0
+
+    div.labels
+      align-items: center
+      min-height: 3em
+

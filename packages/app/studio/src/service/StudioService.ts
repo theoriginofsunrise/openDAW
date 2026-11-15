@@ -600,7 +600,14 @@ export class StudioService implements ProjectEnv {
     #checkRecovery(): void {
         this.recovery.restoreProfile().then(optProfile => {
             if (optProfile.nonEmpty()) {
+                // The backup holds changes that were never saved: keep them marked as unsaved, so that closing
+                // the project again asks first, and the automatic backup keeps protecting them.
+                optProfile.unwrap().updateMetaData("modified", new Date().toISOString())
                 this.#projectProfileService.setValue(optProfile)
+                RuntimeNotifier.info({
+                    headline: "Unsaved changes restored",
+                    message: "The project is back as you left it. Save it from the openDAW menu to keep these changes."
+                }).then(EmptyExec, EmptyExec)
             }
         }, EmptyExec)
     }

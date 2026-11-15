@@ -1,4 +1,4 @@
-import {suspendAutoScroll} from "@/ui/AutoScroll"
+import {suspendAutoScroll} from "@/ui/AutoScrollSuspension"
 import {Terminable} from "@opendaw/lib-std"
 import {Events} from "@opendaw/lib-dom"
 import {TimelineRange} from "@opendaw/studio-core"

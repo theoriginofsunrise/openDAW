@@ -20,6 +20,7 @@ import {CloudBackupSoundfonts} from "./CloudBackupSoundfonts"
 import {CloudBackupWclaps} from "./CloudBackupWclaps"
 import {CloudBackupPresets} from "./CloudBackupPresets"
 import {CloudBackupScripts} from "./CloudBackupScripts"
+import {CloudSyncHooks} from "./CloudSyncHooks"
 import {ProjectSignals} from "../project"
 
 export namespace CloudBackup {
@@ -54,9 +55,12 @@ export namespace CloudBackup {
                 })
                 if (!retry) {return}
             }
+            const notes = CloudSyncHooks.takeNotes()
             await RuntimeNotifier.info({
                 headline: "Cloud Backup",
-                message: "Everything is up to date."
+                message: notes.length === 0
+                    ? "Everything is up to date."
+                    : `Done.\n\n${notes.map(line => `- ${line}`).join("\n")}`
             })
         } catch (reason: unknown) {
             if (Errors.isAbort(reason)) {return}
@@ -112,7 +116,7 @@ export namespace CloudBackup {
             const json: Lock = {id: Browser.id(), created: new Date().toISOString()}
             await cloudHandler.upload(lockPath, new TextEncoder().encode(JSON.stringify(json)).buffer)
             await CloudBackupSamples.start(cloudHandler, progressSamples, log)
-            await CloudBackupProjects.start(cloudHandler, progressProjects, log)
+            await CloudBackupProjects.start(cloudHandler, service, progressProjects, log)
             await CloudBackupTemplates.start(cloudHandler, progressTemplates, log)
             await CloudBackupSoundfonts.start(cloudHandler, progressSoundfonts, log)
             await CloudBackupPresets.start(cloudHandler, progressPresets, log)

@@ -1,3 +1,6 @@
+import {CloudSafety} from "@/CloudSafety"
+import {PresenceService} from "@/PresenceService"
+import {AutoBackup} from "@/AutoBackup"
 import {ScreenWake} from "@/ScreenWake"
 import "./main.sass"
 
@@ -147,6 +150,9 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
         new BufferUnderrunDetector(context.playbackStats, service.engine)
     }
     ScreenWake.install(service.engine)
+    AutoBackup.install(service)
+    CloudSafety.install(service)
+    PresenceService.install(service, cloudAuthManager)
     const errorHandler = new ErrorHandler(buildInfo, () => service.recovery.createBackupCommand(),
         () => ReportNames.collectNames(service))
     service.engineErrors.subscribe(event => errorHandler.reportEngineError(event, WasmEngine.recentUpdates()))

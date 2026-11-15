@@ -1,4 +1,4 @@
-import {suspendAutoScroll} from "@/ui/AutoScroll"
+import {suspendAutoScroll} from "@/ui/AutoScrollSuspension"
 import {asDefined, Client, Exec, isDefined, Lifecycle, Notifier, Nullable, Option, Optional, Procedure, Subscription, UUID, Terminable} from "@opendaw/lib-std"
 import {AnimationFrame, Browser, Dragging, Events, Keyboard} from "@opendaw/lib-dom"
 import {AudioUnitGroups, Devices, UnionBoxTypes} from "@opendaw/studio-adapters"

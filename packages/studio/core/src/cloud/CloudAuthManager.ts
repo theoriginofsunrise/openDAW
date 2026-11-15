@@ -1,4 +1,15 @@
-import {asDefined, Errors, isDefined, isNull, Maps, panic, Provider, RuntimeNotifier, TimeSpan} from "@opendaw/lib-std"
+import {
+    asDefined,
+    Errors,
+    isDefined,
+    isNull,
+    Maps,
+    panic,
+    Provider,
+    RuntimeNotifier,
+    Terminable,
+    TimeSpan
+} from "@opendaw/lib-std"
 import {Promises} from "@opendaw/lib-runtime"
 import {CloudService} from "./CloudService"
 import {CloudHandler} from "./CloudHandler"
@@ -35,6 +46,9 @@ export class CloudAuthManager {
     readonly #clientIds: ClientIds
 
     readonly #memoizedHandlers = new Map<CloudService, () => Promise<CloudHandler>>()
+    // handlers that logged in during this session, with the time their login runs out
+    readonly #live = new Map<CloudService, { handler: CloudHandler, until: number }>()
+    readonly #handlerObservers = new Set<() => void>()
 
     #memoizedSoundCloud: Provider<Promise<SoundCloudApi>>
 
@@ -44,6 +58,24 @@ export class CloudAuthManager {
     }
 
     soundCloud(): Promise<SoundCloudApi> {return this.#memoizedSoundCloud()}
+
+    /**
+     * A handler whose login is still valid, or null. Never opens a login window, so it is safe to call from a timer.
+     */
+    peekHandler(): CloudHandler | null {
+        const now = Date.now()
+        for (const [service, entry] of this.#live) {
+            if (entry.until > now) {return entry.handler}
+            this.#live.delete(service)
+        }
+        return null
+    }
+
+    /** Called after every successful login (also after a refresh of an expired one). */
+    subscribeHandler(observer: () => void): Terminable {
+        this.#handlerObservers.add(observer)
+        return {terminate: () => {this.#handlerObservers.delete(observer)}}
+    }
 
     #createSoundCloudMemo(): Provider<Promise<SoundCloudApi>> {
         return Promises.memoizeAsync(() => this.#oauthPkceFlow({
@@ -78,6 +110,9 @@ export class CloudAuthManager {
             return Promise.reject(error)
         }
         console.debug(`Handler for '${service}' is alive`)
+        // the login lasts about an hour, stay clear of the end
+        this.#live.set(service, {handler, until: Date.now() + TimeSpan.minutes(50).millis()})
+        this.#handlerObservers.forEach(observer => observer())
         return handler
     }
 

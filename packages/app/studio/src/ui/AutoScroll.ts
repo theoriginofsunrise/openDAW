@@ -1,3 +1,4 @@
+import {isAutoScrollSuspended} from "@/ui/AutoScrollSuspension"
 import {AABB, Client, isDefined, Option, Padding, Provider, Terminable, Terminator} from "@opendaw/lib-std"
 import {Surface} from "@/ui/surface/Surface.tsx"
 import {AnimationFrame, Events} from "@opendaw/lib-dom"
@@ -13,11 +14,6 @@ export type Options = {
 }
 
 const DragOverSilence = 1000
-
-// Phone fork: while a finger scrolls a list by hand (or two fingers pan the timeline) the edge auto-scroll must
-// stay quiet, otherwise it adds its own scrolling as soon as the finger passes the edge of the area.
-let suspended = false
-export const suspendAutoScroll = (value: boolean): void => {suspended = value}
 
 export const installAutoScroll = (target: Element, autoScroller: AutoScroller, options?: Options): Terminable => {
     const lifeTime = new Terminator()
@@ -37,7 +33,7 @@ export const installAutoScroll = (target: Element, autoScroller: AutoScroller, o
         scrolling = Option.None
     }
     const moveListener = ({clientX, clientY}: Client) => {
-        if (suspended) {return stop()}
+        if (isAutoScrollSuspended()) {return stop()}
         const {xMin, xMax, yMin, yMax} = AABB.padding(measure(), padding)
         deltaX = clientX < xMin ? clientX - xMin : clientX > xMax ? clientX - xMax : 0
         deltaY = clientY < yMin ? clientY - yMin : clientY > yMax ? clientY - yMax : 0
