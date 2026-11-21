@@ -7,3 +7,5 @@ export * from "./SampleProvider"
 export * from "./SampleService"
 export * from "./SampleStorage"
 export * from "./WasmBpmDetector"
+export * from "./SampleFormat"
+

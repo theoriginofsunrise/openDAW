@@ -67,6 +67,14 @@ jobs:
           sed -i "s#628747153367-gt1oqcn3trr9l9a7jhigja6l1t3f1oik\.apps\.googleusercontent\.com#${GOOGLE_DRIVE_CLIENT_ID}#" packages/app/studio/src/boot.ts
           grep -c "${GOOGLE_DRIVE_CLIENT_ID}" packages/app/studio/src/boot.ts
 
+      - name: Use our own storage server (optional, repository variable ECHO_SERVER_URL)
+        if: ${{ vars.ECHO_SERVER_URL != '' }}
+        env:
+          ECHO_SERVER_URL: ${{ vars.ECHO_SERVER_URL }}
+        run: |
+          sed -i "s#__ECHO_SERVER_URL__#${ECHO_SERVER_URL%/}#" packages/app/studio/src/boot.ts
+          grep -c "${ECHO_SERVER_URL%/}" packages/app/studio/src/boot.ts
+
       - name: Build
         env:
           DEPLOY_BASE: /
@@ -86,6 +94,26 @@ jobs:
 
       - name: Write the offline file list for the service worker
         run: node scripts/write-precache.mjs packages/app/studio/dist
+
+      - name: Report the size of the build (see the summary of this run)
+        run: |
+          DIST=packages/app/studio/dist
+          FILES=$(find "$DIST" -type f | wc -l)
+          TOTAL=$(du -sh "$DIST" | cut -f1)
+          PLAIN=$(find "$DIST" -type f ! -name '*.br' -print0 | du -ch --files0-from=- | tail -1 | cut -f1)
+          {
+            echo "### Size of the build"
+            echo ""
+            echo "- Files: **$FILES** (Cloudflare Pages free plan: at most 20,000)"
+            echo "- Total on disk: **$TOTAL**, of which without the precompressed .br copies: **$PLAIN**"
+            echo "- Limit per file on Cloudflare: 25 MiB"
+            echo ""
+            echo "Largest files:"
+            echo ""
+            echo '```'
+            find "$DIST" -type f -printf '%s %p\n' | sort -rn | head -15 | awk '{printf "%7.1f MB  %s\n", $1/1048576, $2}'
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Create the Pages project (no-op if it already exists)
         uses: cloudflare/wrangler-action@v3

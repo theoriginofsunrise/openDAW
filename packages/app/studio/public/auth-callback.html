@@ -74,7 +74,7 @@
         }
     }
 
-    // Support both code flow (?code=...) and implicit flow (#access_token=...)
+    // Support the code flow (?code=...) and the implicit flows (#access_token=... or #id_token=...)
     const qs = new URLSearchParams(window.location.search);
     const code = qs.get('code');
     const error = qs.get('error');
@@ -83,12 +83,15 @@
     const hash = window.location.hash.startsWith('#') ? window.location.hash.substring(1) : window.location.hash;
     const hs = new URLSearchParams(hash);
     const accessToken = hs.get('access_token');
+    const idToken = hs.get('id_token');
     const tokenError = hs.get('error');
 
     if (code !== null) {
         postAndClose({type: 'auth-callback', code});
     } else if (accessToken !== null) {
         postAndClose({type: 'auth-callback', access_token: accessToken});
+    } else if (idToken !== null) {
+        postAndClose({type: 'auth-callback', id_token: idToken});
     } else if (error !== null || tokenError !== null) {
         const errorDesc = qs.get('error_description') || hs.get('error_description') || 'Authentication failed';
         container.innerHTML = `

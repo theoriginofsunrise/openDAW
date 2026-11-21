@@ -1,3 +1,5 @@
+import {EchoPreconditionFailed} from "./EchoCloudHandler"
+import {SampleFormat} from "../samples/SampleFormat"
 import {Arrays, Errors, panic, Procedure, Progress, RuntimeNotifier, UUID} from "@opendaw/lib-std"
 import {network, Promises} from "@opendaw/lib-runtime"
 import {SamplePeaks} from "@opendaw/lib-fusion"
@@ -19,9 +21,14 @@ export class CloudBackupSamples {
 
     static pathFor(uuid: UUID.String): string {return `${this.RemotePath}/${uuid}.wav`}
 
+    /**
+     * download: false only uploads what is missing in the cloud and leaves the rest there. The audio files are then
+     * fetched one by one, at the moment a project needs them (see EchoSampleSource).
+     */
     static async start(cloudHandler: CloudHandler,
                        progress: Progress.Handler,
-                       log: Procedure<string>) {
+                       log: Procedure<string>,
+                       options: { download?: boolean } = {}) {
         log("Collecting all sample domains...")
         const [stock, local, cloud] = await Promise.all([
             FactoryCatalog.get().samples(),
@@ -31,22 +38,25 @@ export class CloudBackupSamples {
                 .catch(reason => reason instanceof Errors.FileNotFound ? Arrays.empty() : panic(reason))
         ])
         const trashed = CloudBackupStructure.trashedUuids(await SampleStorage.get().structure.load())
-        return new CloudBackupSamples(cloudHandler, {stock, local, cloud}, trashed, log).#start(progress)
+        return new CloudBackupSamples(cloudHandler, {stock, local, cloud}, trashed, log, options).#start(progress)
     }
 
     readonly #cloudHandler: CloudHandler
     readonly #sampleDomains: SampleDomains
     readonly #trashed: ReadonlySet<UUID.String>
     readonly #log: Procedure<string>
+    readonly #options: { download?: boolean }
 
     private constructor(cloudHandler: CloudHandler,
                         sampleDomains: SampleDomains,
                         trashed: ReadonlySet<UUID.String>,
-                        log: Procedure<string>) {
+                        log: Procedure<string>,
+                        options: { download?: boolean }) {
         this.#cloudHandler = cloudHandler
         this.#sampleDomains = sampleDomains
         this.#trashed = trashed
         this.#log = log
+        this.#options = options
     }
 
     async #start(progress: Progress.Handler) {
@@ -57,7 +67,11 @@ export class CloudBackupSamples {
         const [uploadProgress, trashProgress, downloadProgress] = Progress.splitWithWeights(progress, [0.45, 0.10, 0.45])
         await this.#upload(uploadProgress)
         await this.#trash(tombstones, trashProgress)
-        await this.#download(tombstones, downloadProgress)
+        if (this.#options.download === false) {
+            downloadProgress(1.0)
+        } else {
+            await this.#download(tombstones, downloadProgress)
+        }
         // Deleted for good elsewhere, still sitting here: it goes to this device's trash, not to the bin.
         await CloudBackupStructure.trashLocally(storage.structure, this.#sampleDomains.local
             .map(({uuid}) => uuid)
@@ -80,7 +94,7 @@ export class CloudBackupSamples {
                 progress((index + 1) / length)
                 this.#log(`Uploading sample '${sample.name}'`)
                 const arrayBuffer = await SampleStorage.get().load(UUID.parse(sample.uuid))
-                    .then(([data]) => WavFile.encodeFloats(data))
+                    .then(([data]) => SampleFormat.encode(data))
                 const path = CloudBackupSamples.pathFor(sample.uuid)
                 await Promises.approvedRetry(() => this.#cloudHandler.upload(path, arrayBuffer), error => ({
                     headline: "Upload failed",
@@ -90,8 +104,7 @@ export class CloudBackupSamples {
                 }))
                 return sample
             }))
-        const catalog: Array<Sample> = Arrays.merge(cloud, uploadedSamples, CloudBackupSamples.areSamplesEqual)
-        await this.#uploadCatalog(catalog)
+        await this.#updateCatalog(latest => Arrays.merge(latest, uploadedSamples, CloudBackupSamples.areSamplesEqual))
         progress(1.0)
     }
 
@@ -119,9 +132,7 @@ export class CloudBackupSamples {
                 await this.#cloudHandler.delete(CloudBackupSamples.pathFor(sample.uuid))
                 return sample
             }))
-        const catalog = cloud.slice()
-        result.forEach((sample) => Arrays.removeIf(catalog, ({uuid}) => sample.uuid === uuid))
-        await this.#uploadCatalog(catalog)
+        await this.#updateCatalog(latest => latest.filter(({uuid}) => !result.some(sample => sample.uuid === uuid)))
         progress(1.0)
     }
 
@@ -160,10 +171,23 @@ export class CloudBackupSamples {
         progress(1.0)
     }
 
-    async #uploadCatalog(catalog: ReadonlyArray<Sample>) {
+    /**
+     * The catalog is shared by every device. The current one is read again right before it is written, and only
+     * this sync's own change is applied to it. If another device wrote in between (the server refuses an upload that
+     * does not start from the latest version), it is read again and the change applied once more.
+     */
+    async #updateCatalog(change: (latest: ReadonlyArray<Sample>) => ReadonlyArray<Sample>) {
         this.#log("Uploading sample catalog...")
-        const jsonString = JSON.stringify(catalog, null, 2)
-        const buffer = new TextEncoder().encode(jsonString).buffer
-        return this.#cloudHandler.upload(CloudBackupSamples.RemoteCatalogPath, buffer)
+        for (let attempt = 1; ; attempt++) {
+            const latest: ReadonlyArray<Sample> = await this.#cloudHandler.download(CloudBackupSamples.RemoteCatalogPath)
+                .then(json => JSON.parse(new TextDecoder().decode(json)))
+                .catch(reason => reason instanceof Errors.FileNotFound ? Arrays.empty() : panic(reason))
+            const buffer = new TextEncoder().encode(JSON.stringify(change(latest), null, 2)).buffer
+            try {
+                return await this.#cloudHandler.upload(CloudBackupSamples.RemoteCatalogPath, buffer)
+            } catch (error) {
+                if (!(error instanceof EchoPreconditionFailed) || attempt >= 4) {throw error}
+            }
+        }
     }
 }

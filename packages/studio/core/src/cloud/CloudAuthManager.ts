@@ -14,6 +14,8 @@ import {Promises} from "@opendaw/lib-runtime"
 import {CloudService} from "./CloudService"
 import {CloudHandler} from "./CloudHandler"
 import {DropboxHandler} from "./DropboxHandler"
+import {EchoCloudHandler} from "./EchoCloudHandler"
+import {EchoSession} from "./EchoSession"
 import {GoogleDriveHandler} from "./GoogleDriveHandler"
 import {SoundCloudApi} from "./SoundCloudApi"
 
@@ -21,6 +23,8 @@ type ClientIds = {
     Dropbox: string
     GoogleDrive: string
     SoundCloud?: string
+    // address of our own storage server (cloudflare-server/); empty or missing: not used
+    EchoServer?: string
 }
 
 export class CloudAuthManager {
@@ -87,6 +91,26 @@ export class CloudAuthManager {
 
     soundCloud(): Promise<SoundCloudApi> {return this.#memoizedSoundCloud()}
 
+    /** Our own storage server is set up for this build. */
+    get echoEnabled(): boolean {return isDefined(this.#clientIds.EchoServer) && this.#clientIds.EchoServer !== ""}
+
+    /** The email of the person signed in to the storage server, or null. */
+    get echoEmail(): string | null {return this.echoEnabled ? EchoSession.read()?.email ?? null : null}
+
+    signOutEcho(): void {this.#echoSessionEnded()}
+
+    #echoHandler(session: EchoSession.Stored): EchoCloudHandler {
+        return new EchoCloudHandler(asDefined(this.#clientIds.EchoServer, "No storage server"), session.token,
+            (input, init) => fetch(input, init), () => this.#echoSessionEnded())
+    }
+
+    #echoSessionEnded(): void {
+        EchoSession.clear()
+        this.#memoizedHandlers.delete("Echo")
+        this.#live.delete("Echo")
+        this.#handlerObservers.forEach(observer => observer())
+    }
+
     /**
      * A handler whose login is still valid, or null. Never opens a login window, so it is safe to call from a timer.
      */
@@ -98,6 +122,16 @@ export class CloudAuthManager {
             } else if (only === undefined || only === service) {
                 return entry.handler
             }
+        }
+        // the storage server login lasts weeks: it survives reloads and relaunches
+        if (this.echoEnabled && (only === undefined || only === "Echo")) {
+            const session = EchoSession.read()
+            if (session !== null) {
+                const handler = this.#echoHandler(session)
+                this.#live.set("Echo", {handler, until: session.expiresAt * 1000 - TimeSpan.minutes(1).millis()})
+                return handler
+            }
+            if (only === "Echo") {return null}
         }
         // a login from before the last reload may still be good
         const stored = only === undefined || only === "GoogleDrive" ? this.#readStoredToken("GoogleDrive") : null
@@ -135,6 +169,9 @@ export class CloudAuthManager {
                 case "GoogleDrive": {
                     return Promises.memoizeAsync(this.#oauthGoogle.bind(this), TimeSpan.hours(1))
                 }
+                case "Echo": {
+                    return Promises.memoizeAsync(this.#loginEcho.bind(this), TimeSpan.hours(1))
+                }
                 default:
                     return panic(`Unsupported service: ${service}`)
             }
@@ -148,8 +185,11 @@ export class CloudAuthManager {
             return Promise.reject(error)
         }
         console.debug(`Handler for '${service}' is alive`)
-        // the login lasts about an hour, stay clear of the end
-        this.#live.set(service, {handler, until: Date.now() + TimeSpan.minutes(50).millis()})
+        // the login lasts about an hour (the storage server's login: weeks), stay clear of the end
+        const until = service === "Echo"
+            ? (EchoSession.read()?.expiresAt ?? 0) * 1000 - TimeSpan.minutes(1).millis()
+            : Date.now() + TimeSpan.minutes(50).millis()
+        this.#live.set(service, {handler, until})
         this.#handlerObservers.forEach(observer => observer())
         return handler
     }
@@ -306,6 +346,72 @@ export class CloudAuthManager {
         }
         return promise.finally(() => {
             console.debug("[CloudAuth] Closing auth window")
+            authWindow.close()
+            dialog.terminate()
+            channel.close()
+        })
+    }
+
+    // Signs in with Google (an ID token, nothing is read from the person's Google account but the email) and trades it
+    // for a session with the storage server, which only accepts the emails on its allow list.
+    async #loginEcho(): Promise<CloudHandler> {
+        const server = asDefined(this.#clientIds.EchoServer, "No storage server").replace(/\/+$/, "")
+        const stored = EchoSession.read()
+        if (stored !== null) {
+            const handler = this.#echoHandler(stored)
+            const {status} = await Promises.tryCatch(handler.alive())
+            if (status === "resolved") {
+                console.debug("[CloudAuth] Reusing the storage server login")
+                return handler
+            }
+            EchoSession.clear()
+        }
+        const random = new Uint8Array(16)
+        crypto.getRandomValues(random)
+        const nonce = btoa(String.fromCharCode(...random)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "")
+        const params = new URLSearchParams({
+            client_id: this.#clientIds.GoogleDrive,
+            response_type: "id_token",
+            redirect_uri: `${location.origin}/auth-callback.html`,
+            scope: "openid email",
+            nonce,
+            prompt: "select_account"
+        })
+        const authWindow = window.open(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`, "cloudAuth")
+        if (isNull(authWindow)) {
+            return Errors.warn("Failed to open authentication window. Please check popup blockers.")
+        }
+        const {resolve, reject, promise} = Promise.withResolvers<CloudHandler>()
+        const channel = new BroadcastChannel("auth-callback")
+        const dialog = RuntimeNotifier.progress({
+            headline: "Echo Studio",
+            message: "Please sign in with Google...",
+            cancel: () => reject("cancelled")
+        })
+        channel.onmessage = async (event: MessageEvent<any>) => {
+            const data = asDefined(event.data, "No data")
+            if (data.type === "auth-callback" && isDefined(data.id_token)) {
+                try {
+                    const response = await fetch(`${server}/auth/google`, {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({idToken: data.id_token, nonce})
+                    })
+                    const body = await response.json().catch(() => ({}))
+                    if (!response.ok) {
+                        return reject(new Error(body.message ?? `The storage server refused the login (${response.status})`))
+                    }
+                    const session: EchoSession.Stored = {token: body.token, email: body.email, expiresAt: body.expiresAt}
+                    EchoSession.write(session)
+                    resolve(this.#echoHandler(session))
+                } catch (err) {
+                    reject(err)
+                }
+            } else if (data.type === "closed") {
+                reject(null)
+            }
+        }
+        return promise.finally(() => {
             authWindow.close()
             dialog.terminate()
             channel.close()

@@ -1,3 +1,4 @@
+import {SampleFormat} from "./SampleFormat"
 import {ByteArrayInput, EmptyExec, Lazy, Progress, tryCatch, UUID} from "@opendaw/lib-std"
 import {Peaks, SamplePeaks} from "@opendaw/lib-fusion"
 import {Sample, SampleMetaData} from "@opendaw/studio-adapters"
@@ -24,7 +25,7 @@ export class SampleStorage extends Storage<Sample, SampleMetaData, SampleStorage
 
     async save({uuid, audio, peaks, meta}: SampleStorage.NewSample): Promise<void> {
         const path = `${this.folder}/${UUID.toString(uuid)}`
-        const data = new Uint8Array(WavFile.encodeFloats({
+        const data = new Uint8Array(SampleFormat.encode({
             frames: audio.frames.slice(),
             numberOfFrames: audio.numberOfFrames,
             numberOfChannels: audio.numberOfChannels,

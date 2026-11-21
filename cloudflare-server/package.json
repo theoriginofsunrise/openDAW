@@ -1,0 +1,12 @@
+{
+  "name": "echostudio-server",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "EchoStudio storage server for Cloudflare Workers + R2. Deployed by .github/workflows/deploy-server.yml",
+  "scripts": {
+    "dev": "npx wrangler@4 dev",
+    "deploy": "npx wrangler@4 deploy",
+    "test": "npx vitest run"
+  }
+}

@@ -1,8 +1,9 @@
 import {createElement} from "@opendaw/lib-jsx"
-import {Lifecycle, RuntimeSignal} from "@opendaw/lib-std"
+import {Lifecycle, RuntimeNotifier, RuntimeSignal} from "@opendaw/lib-std"
 import {IconSymbol} from "@opendaw/studio-enums"
 import {CloudBackup, CloudSyncStatus, ProjectSignals, SyncStatus} from "@opendaw/studio-core"
 import {Icon} from "@/ui/components/Icon"
+import {EchoSync} from "@/EchoSync"
 import type {StudioService} from "@/service/StudioService"
 
 type Construct = {
@@ -12,16 +13,25 @@ type Construct = {
 
 type State = "unknown" | "synced" | "pending" | "busy"
 
-const Service = "GoogleDrive" as const
 const StateClasses: ReadonlyArray<State> = ["unknown", "synced", "pending", "busy"]
 
-// Phone fork: one tap sync with Google Drive. Green: everything is in sync. Red: something has to go up, come down,
-// or needs a decision. Blue: not logged in (or no network), so nothing is known: tap to log in and sync.
+// Phone fork: the Sync button. With our own storage server (Cloudflare) in the build the sync runs by itself (at the
+// start, after every save, ...) and the button shows how it stands; a tap syncs everything now and, when nobody is
+// signed in, asks for the login. Without that server it syncs with Google Drive, as before.
+// Green: everything is in sync. Red: something has to go up, come down, or needs a decision (or the last sync failed).
+// Blue: not signed in, so nothing is known.
 // The colour covers the projects. Samples and other resources travel with the same sync.
 export const SyncButton = ({lifecycle, service}: Construct) => {
-    const label: HTMLElement = <span>Sync</span>
+    const auth = service.cloudAuthManager
+    const echo = auth.echoEnabled
+    const cloud = echo ? "Echo" : "GoogleDrive"
+    const autoSync = echo ? EchoSync.get() : null
+    const signIn = echo ? "Sign in" : "Sync"
+    const label: HTMLElement = <span>{signIn}</span>
     const button: HTMLElement = (
-        <button className="action sync unknown" title="Log in to Google Drive and sync." onclick={() => void run()}>
+        <button className="action sync unknown"
+                title={echo ? "Sign in with Google to keep your projects on the storage server." : "Log in to Google Drive and sync."}
+                onclick={() => void run()}>
             <Icon symbol={IconSymbol.GoogleDrive}/>
             {label}
         </button>
@@ -30,43 +40,61 @@ export const SyncButton = ({lifecycle, service}: Construct) => {
     let generation = 0
     let timer: ReturnType<typeof setTimeout> | undefined
 
+    const isBusy = (): boolean => busy || autoSync?.state.getValue() === "syncing"
+
     const show = (state: State, status?: SyncStatus): void => {
         StateClasses.forEach(name => button.classList.toggle(name, name === state))
         label.textContent = state === "busy" ? "Syncing..."
-            : state === "pending" && status !== undefined ? `Sync (${status.count})` : "Sync"
-        button.title = state === "busy" ? "Syncing with Google Drive..."
-            : state === "synced" ? "Everything is in sync with Google Drive."
+            : state === "pending" && status !== undefined ? `Sync (${status.count})`
+                : state === "unknown" ? signIn : "Sync"
+        button.title = state === "busy" ? "Syncing..."
+            : state === "synced" ? (echo ? "Everything is in sync with the storage server." : "Everything is in sync with Google Drive.")
                 : state === "pending" && status !== undefined
                     ? `To upload: ${status.push.length}, to download: ${status.pull.length}, `
                     + `to decide: ${status.decide.length}, deletions: ${status.deletions.length}. Tap to sync.`
-                    : "Log in to Google Drive and sync."
+                    : echo ? "Sign in with Google to keep your projects on the storage server." : "Log in to Google Drive and sync."
     }
 
     const refresh = async (): Promise<void> => {
-        if (busy) {return}
+        if (isBusy()) {return}
         const current = ++generation
-        const handler = service.cloudAuthManager.peekHandler(Service)
+        const handler = auth.peekHandler(cloud)
         if (handler === null) {
             show("unknown")
             return
         }
+        // the last background sync did not work: say so, a tap tries again
+        if (autoSync?.state.getValue() === "error") {
+            label.textContent = "Retry sync"
+            StateClasses.forEach(name => button.classList.toggle(name, name === "pending"))
+            button.title = "The last sync with the storage server failed. Tap to try again."
+            return
+        }
         try {
-            const status = await CloudSyncStatus.check(handler, Service)
-            if (current === generation && !busy) {show(status.count === 0 ? "synced" : "pending", status)}
+            const status = await CloudSyncStatus.check(handler, cloud)
+            if (current === generation && !isBusy()) {show(status.count === 0 ? "synced" : "pending", status)}
         } catch (error) {
             console.warn("Sync status unavailable", error)
-            if (current === generation && !busy) {show("unknown")}
+            if (current === generation && !isBusy()) {show("unknown")}
         }
     }
 
     const run = async (): Promise<void> => {
-        if (busy) {return}
+        if (isBusy()) {return}
         busy = true
         show("busy")
         try {
-            await CloudBackup.backup(service.cloudAuthManager, Service)
-        } catch (_error) {
-            // the backup already told the person what went wrong
+            if (echo) {
+                await autoSync?.syncNow()
+            } else {
+                await CloudBackup.backup(auth, "GoogleDrive")
+            }
+        } catch (error) {
+            console.warn(error)
+            await RuntimeNotifier.info({
+                headline: "Sync failed",
+                message: error instanceof Error ? error.message : String(error)
+            })
         } finally {
             busy = false
             void refresh()
@@ -81,7 +109,7 @@ export const SyncButton = ({lifecycle, service}: Construct) => {
     const interval = setInterval(() => void refresh(), 120_000)
     document.addEventListener("visibilitychange", onVisible)
     lifecycle.ownAll(
-        service.cloudAuthManager.subscribeHandler(schedule),
+        auth.subscribeHandler(schedule),
         RuntimeSignal.subscribe(signal => signal === ProjectSignals.StorageUpdated && schedule()),
         {
             terminate: () => {
@@ -91,6 +119,13 @@ export const SyncButton = ({lifecycle, service}: Construct) => {
             }
         }
     )
+    if (autoSync !== null) {
+        // the background sync starts and ends: show it, and look again how things stand when it is over
+        lifecycle.own(autoSync.state.subscribe(owner => {
+            if (owner.getValue() === "syncing") {show("busy")} else {schedule()}
+        }))
+        if (autoSync.state.getValue() === "syncing") {show("busy")}
+    }
     void refresh()
     return button
 }

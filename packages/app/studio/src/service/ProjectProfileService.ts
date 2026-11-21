@@ -79,7 +79,10 @@ export class ProjectProfileService {
                     message: "Could not save project (storage temporarily unavailable). Please try again.",
                     icon: "Warning"
                 })
+                return
             }
+            // the storage server (if there is one) gets the saved project
+            RuntimeSignal.dispatch(ProjectSignals.ProjectSaved)
         })
     }
 
@@ -109,6 +112,7 @@ export class ProjectProfileService {
                 return
             }
             optProfile.ifSome(profile => this.#profile.wrap(profile))
+            RuntimeSignal.dispatch(ProjectSignals.ProjectSaved)
         })
     }
 

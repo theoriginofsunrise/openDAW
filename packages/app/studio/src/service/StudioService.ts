@@ -236,6 +236,7 @@ export class StudioService implements ProjectEnv {
         const {status} = await Promises.tryCatch(ProjectStorage.deleteProject(uuid))
         if (status === "resolved") {
             this.#signals.notify({type: "delete-project", meta})
+            RuntimeSignal.dispatch(ProjectSignals.ProjectDeleted)
         }
     }
 

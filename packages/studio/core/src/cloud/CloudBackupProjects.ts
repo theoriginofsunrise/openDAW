@@ -1,3 +1,4 @@
+import {EchoPreconditionFailed} from "./EchoCloudHandler"
 import {
     Arrays,
     Errors,
@@ -44,13 +45,18 @@ export class CloudBackupProjects {
     static readonly RemotePath = "projects"
     static readonly RemoteCatalogPath = `${this.RemotePath}/index.json`
 
+    /**
+     * confirmDeletes: false removes a project from the cloud without asking once it was deleted on this device (the
+     * person already confirmed the deletion when they made it). What was deleted on other devices is always asked.
+     */
     static async start(cloudHandler: CloudHandler,
                        service: string,
                        progress: Progress.Handler,
-                       log: Procedure<string>) {
+                       log: Procedure<string>,
+                       options: { confirmDeletes?: boolean } = {}) {
         log("Collecting all project domains...")
         const [local, cloud] = await Promise.all([listLocal(), downloadCatalog(cloudHandler)])
-        return new CloudBackupProjects(cloudHandler, service, local, cloud, log).#start(progress)
+        return new CloudBackupProjects(cloudHandler, service, local, cloud, log, options).#start(progress)
     }
 
     // What the cloud holds right now: the project catalog and the deletions that were recorded for every device.
@@ -69,16 +75,18 @@ export class CloudBackupProjects {
     // the cloud service ("GoogleDrive", ...): every service has its own sync history
     readonly #service: string
     readonly #log: Procedure<string>
+    readonly #options: { confirmDeletes?: boolean }
     #local: Projects
     #cloud: Projects
 
     private constructor(cloudHandler: CloudHandler, service: string, local: Projects, cloud: Projects,
-                        log: Procedure<string>) {
+                        log: Procedure<string>, options: { confirmDeletes?: boolean }) {
         this.#cloudHandler = cloudHandler
         this.#service = service
         this.#local = local
         this.#cloud = cloud
         this.#log = log
+        this.#options = options
     }
 
     async #start(progress: Progress.Handler): Promise<void> {
@@ -292,7 +300,7 @@ export class CloudBackupProjects {
         const obsolete: Array<[string, MetaFields]> =
             Arrays.intersect(Object.entries(this.#cloud), trashed, ([uuid, _], trashed) => uuid === trashed)
         if (obsolete.length > 0) {
-            const approved = await RuntimeNotifier.approve({
+            const approved = this.#options.confirmDeletes === false || await RuntimeNotifier.approve({
                 headline: "Delete Projects?",
                 message: `Found ${obsolete.length} locally deleted projects. Delete from cloud as well?`,
                 approveText: "Yes",
@@ -388,12 +396,20 @@ export class CloudBackupProjects {
      */
     async #updateCatalog(changed: Projects, removed: ReadonlyArray<UUID.String>): Promise<void> {
         this.#log("Uploading project catalog...")
-        const latest = await downloadCatalog(this.#cloudHandler).catch(() => this.#cloud)
-        const catalog: Projects = {...latest, ...changed}
-        removed.forEach(uuid => delete catalog[uuid])
-        this.#cloud = catalog
-        const jsonString = JSON.stringify(catalog, null, 2)
-        const buffer = new TextEncoder().encode(jsonString).buffer
-        return this.#cloudHandler.upload(CloudBackupProjects.RemoteCatalogPath, buffer)
+        // The server refuses an upload that does not start from the latest version (another device wrote in between):
+        // read it again and apply this sync's change once more.
+        for (let attempt = 1; ; attempt++) {
+            const latest = await downloadCatalog(this.#cloudHandler).catch(() => this.#cloud)
+            const catalog: Projects = {...latest, ...changed}
+            removed.forEach(uuid => delete catalog[uuid])
+            this.#cloud = catalog
+            const jsonString = JSON.stringify(catalog, null, 2)
+            const buffer = new TextEncoder().encode(jsonString).buffer
+            try {
+                return await this.#cloudHandler.upload(CloudBackupProjects.RemoteCatalogPath, buffer)
+            } catch (error) {
+                if (!(error instanceof EchoPreconditionFailed) || attempt >= 4) {throw error}
+            }
+        }
     }
 }

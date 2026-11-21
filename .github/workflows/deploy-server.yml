@@ -1,0 +1,88 @@
+# Deploys the EchoStudio storage server (cloudflare-server/) to Cloudflare Workers. It runs when that folder changes,
+# and by hand from the Actions tab ("Run workflow").
+#
+# What it needs (repository settings, Settings > Secrets and variables > Actions):
+#   secret   CLOUDFLARE_API_TOKEN    the token used for the app too, with the rights "Workers Scripts: Edit" and
+#                                    "Workers R2 Storage: Edit" added (see cloudflare-server/README.md)
+#   secret   CLOUDFLARE_ACCOUNT_ID   already there for the app
+#   variable GOOGLE_DRIVE_CLIENT_ID  already there: the Google client id of the app
+#   variable ALLOWED_EMAILS          the Google emails that may sign in, separated by commas
+#   variable ALLOWED_ORIGINS         optional: the websites that may use the server (default: the app's address)
+# And in Cloudflare: an R2 bucket called echostudio-audio, and a workers.dev name registered for the account.
+name: Deploy EchoStudio server to Cloudflare
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["cloudflare-server/**", ".github/workflows/deploy-server.yml"]
+
+concurrency:
+  group: deploy-server
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_DRIVE_CLIENT_ID }}
+      ALLOWED_EMAILS: ${{ vars.ALLOWED_EMAILS }}
+      ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+    steps:
+      - name: Check the settings
+        run: |
+          missing=""
+          [ -z "$CLOUDFLARE_API_TOKEN" ] && missing="$missing secret:CLOUDFLARE_API_TOKEN"
+          [ -z "$CLOUDFLARE_ACCOUNT_ID" ] && missing="$missing secret:CLOUDFLARE_ACCOUNT_ID"
+          [ -z "$GOOGLE_CLIENT_ID" ] && missing="$missing variable:GOOGLE_DRIVE_CLIENT_ID"
+          [ -z "$ALLOWED_EMAILS" ] && missing="$missing variable:ALLOWED_EMAILS"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing in the repository settings:$missing. See cloudflare-server/README.md."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Deploy the server
+        working-directory: cloudflare-server
+        run: |
+          set -o pipefail
+          args=(--var "GOOGLE_CLIENT_ID:$GOOGLE_CLIENT_ID" --var "ALLOWED_EMAILS:$ALLOWED_EMAILS")
+          if [ -n "$ALLOWED_ORIGINS" ]; then args+=(--var "ALLOWED_ORIGINS:$ALLOWED_ORIGINS"); fi
+          npx --yes wrangler@4 deploy "${args[@]}" 2>&1 | tee /tmp/deploy.log
+
+      # The session secret signs the logins the server hands out. It is made once, here, and never shown anywhere:
+      # a new one would end every login.
+      - name: Create the session secret (only the first time)
+        working-directory: cloudflare-server
+        run: |
+          if npx --yes wrangler@4 secret list --name echostudio-server --format json | grep -q '"SESSION_SECRET"'; then
+            echo "The session secret exists already."
+          else
+            openssl rand -hex 32 | npx --yes wrangler@4 secret put SESSION_SECRET --name echostudio-server
+          fi
+
+      - name: Check that the server answers
+        run: |
+          url=$(grep -o 'https://[A-Za-z0-9.-]*workers\.dev' /tmp/deploy.log | head -1)
+          if [ -z "$url" ]; then echo "::error::The address of the server was not found in the log."; exit 1; fi
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS "$url/" > /tmp/answer.json; then break; fi
+            sleep 5
+          done
+          cat /tmp/answer.json
+          {
+            echo "### EchoStudio server"
+            echo ""
+            echo "- Address: **$url**"
+            echo "- Answer: \`$(cat /tmp/answer.json)\`"
+            echo ""
+            echo "Put the address in the repository variable ECHO_SERVER_URL, then deploy the app again."
+          } | tee -a "$GITHUB_STEP_SUMMARY"

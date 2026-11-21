@@ -1,3 +1,4 @@
+import {EchoSync} from "@/EchoSync"
 import {AudioRecovery} from "@/AudioRecovery"
 import {CloudSafety} from "@/CloudSafety"
 import {PresenceService} from "@/PresenceService"
@@ -29,8 +30,7 @@ import {
     FactoryCatalog,
     GlobalSampleLoaderManager,
     GlobalSoundfontLoaderManager,
-    Workers
-} from "@opendaw/studio-core"
+    Workers, EchoSampleSource} from "@opendaw/studio-core"
 import {OpenPresetAPI, OpenSampleAPI, OpenSoundfontAPI, WclapCatalog} from "@/opendaw-api"
 import {testFeatures} from "@/features.ts"
 import {MissingFeature} from "@/ui/MissingFeature.tsx"
@@ -55,6 +55,9 @@ import {WasmEngine} from "@opendaw/studio-core-wasm"
 import {MasteringDeviceBoxType, MasteringDeviceUrl} from "@opendaw/studio-matchering/device-url"
 
 if ("stackTraceLimit" in Error) {Error.stackTraceLimit = 50}
+
+// The deploy workflow puts the address of our storage server here (repository variable ECHO_SERVER_URL).
+const EchoServerUrl: string = "__ECHO_SERVER_URL__"
 
 const loadBuildInfo = async () => fetch(`/build-info.json?v=${Date.now()}`)
     .then(x => x.json())
@@ -125,9 +128,21 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
         presets: () => OpenPresetAPI.get().list()
     })
     WclapCatalog.get().tree().finally()
+    const cloudAuthManager = CloudAuthManager.create({
+        Dropbox: "jtehjzxaxf3bf1l",
+        GoogleDrive: "628747153367-gt1oqcn3trr9l9a7jhigja6l1t3f1oik.apps.googleusercontent.com",
+        SoundCloud: "t2NZPSxHxTi38C9g6gCMfMr7V1zjdEPa",
+        // our own storage server (cloudflare-server/): empty means this build does not use it
+        EchoServer: EchoServerUrl.startsWith("__") ? "" : EchoServerUrl
+    })
     const chainedSampleProvider = new ChainedSampleProvider({
         fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[AudioData, SampleMetaData]> =>
-            OpenSampleAPI.get().load(uuid, progress)
+            OpenSampleAPI.get().load(uuid, progress).catch(async reason => {
+                // not one of the library's samples: it may be one of ours, waiting in the cloud
+                const handler = cloudAuthManager.peekHandler("Echo")
+                if (handler === null) {return Promise.reject(reason)}
+                return EchoSampleSource.fetch(handler, uuid, progress).catch(() => Promise.reject(reason))
+            })
     })
     const chainedSoundfontProvider = new ChainedSoundfontProvider({
         fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[ArrayBuffer, SoundfontMetaData]> =>
@@ -138,11 +153,6 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
         .catch(() => chainedWclapProvider.fetch(UUID.parse(id), Progress.Empty)))
     const sampleManager = new GlobalSampleLoaderManager(chainedSampleProvider)
     const soundfontManager = new GlobalSoundfontLoaderManager(chainedSoundfontProvider)
-    const cloudAuthManager = CloudAuthManager.create({
-        Dropbox: "jtehjzxaxf3bf1l",
-        GoogleDrive: "628747153367-gt1oqcn3trr9l9a7jhigja6l1t3f1oik.apps.googleusercontent.com",
-        SoundCloud: "t2NZPSxHxTi38C9g6gCMfMr7V1zjdEPa"
-    })
     const service: StudioService = new StudioService(context, audioWorklets.value, audioDevices,
         sampleManager, soundfontManager, chainedSampleProvider, chainedSoundfontProvider, chainedWclapProvider,
         cloudAuthManager, buildInfo)
@@ -159,6 +169,7 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
     AudioRecovery.install(context)
     CloudSafety.install(service)
     PresenceService.install(service, cloudAuthManager)
+    EchoSync.install(cloudAuthManager)
     const errorHandler = new ErrorHandler(buildInfo, () => service.recovery.createBackupCommand(),
         () => ReportNames.collectNames(service))
     service.engineErrors.subscribe(event => errorHandler.reportEngineError(event, WasmEngine.recentUpdates()))

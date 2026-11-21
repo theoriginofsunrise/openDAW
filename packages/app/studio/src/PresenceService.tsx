@@ -54,7 +54,7 @@ export namespace PresenceService {
 
         const tick = async (): Promise<void> => {
             const current = session
-            const handler = auth.peekHandler()
+            const handler = auth.peekHandler(auth.echoEnabled ? "Echo" : undefined)
             if (current === null || handler === null || busy) {return}
             busy = true
             try {
@@ -75,7 +75,7 @@ export namespace PresenceService {
         const begin = (optProfile: Option<ProjectProfile>): void => {
             const previous = session
             session = null
-            const handler = auth.peekHandler()
+            const handler = auth.peekHandler(auth.echoEnabled ? "Echo" : undefined)
             if (previous !== null && handler !== null) {void CloudPresence.clear(handler, previous.uuid)}
             if (optProfile.isEmpty()) {return}
             const profile = optProfile.unwrap()

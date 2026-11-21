@@ -1,0 +1,19 @@
+# EchoStudio storage server: login (Google), and a private file store per user on Cloudflare R2.
+# Deployed by .github/workflows/deploy-server.yml. The three values below that are empty are filled in there
+# from GitHub repository variables, so nothing personal is stored in this file.
+name = "echostudio-server"
+main = "src/index.ts"
+compatibility_date = "2025-11-01"
+workers_dev = true
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "echostudio-audio"
+
+[vars]
+# the Google OAuth client id of the app (same one the app uses to log in)
+GOOGLE_CLIENT_ID = ""
+# who may sign in: Google account emails, separated by commas
+ALLOWED_EMAILS = ""
+# which websites may talk to this server, separated by commas
+ALLOWED_ORIGINS = "https://echo-says-echo.pages.dev"

@@ -16,6 +16,7 @@ import {MenuButton} from "@/ui/components/MenuButton"
 import {Surface} from "@/ui/surface/Surface"
 import {ProjectOrder} from "@/project/ProjectOrder"
 import {renameProject} from "@/project/ProjectRename"
+import {duplicateProject} from "@/project/ProjectDuplicate"
 import {Colors, IconSymbol} from "@opendaw/studio-enums"
 import {Dialogs} from "@/ui/components/dialogs"
 import {Await, createElement, DomElement, Frag, Group, JsxValue} from "@opendaw/lib-jsx"
@@ -100,6 +101,15 @@ export const ProjectBrowser = ({service, lifecycle, select, empty}: Construct) =
                                                    RuntimeNotifier.notify({message: "Rename failed.", icon: "Warning"})
                                                }
                                            }
+                                           const duplicate = async () => {
+                                               const copied = await Promises.tryCatch(duplicateProject(service, uuid))
+                                               if (copied.status === "rejected") {
+                                                   console.warn(copied.error)
+                                                   RuntimeNotifier.notify({message: "Could not duplicate the project.", icon: "Warning"})
+                                               } else if (copied.value !== null) {
+                                                   RuntimeNotifier.notify({message: `Created '${copied.value}'.`})
+                                               }
+                                           }
                                            const move = (action: ProjectOrder.Action) => {
                                                const displayed = ProjectOrder.sort(projects).map(entry => UUID.toString(entry.uuid))
                                                ProjectOrder.save(ProjectOrder.arrange(displayed, UUID.toString(uuid), action))
@@ -108,6 +118,7 @@ export const ProjectBrowser = ({service, lifecycle, select, empty}: Construct) =
                                            const menu: DomElement = (
                                                <MenuButton root={MenuItem.root().setRuntimeChildrenProcedure(parent => parent.addMenuItem(
                                                    MenuItem.default({label: "Rename..."}).setTriggerProcedure(() => void rename()),
+                                                   MenuItem.default({label: "Duplicate"}).setTriggerProcedure(() => void duplicate()),
                                                    MenuItem.default({label: "Move up"}).setTriggerProcedure(() => move("up")),
                                                    MenuItem.default({label: "Move down"}).setTriggerProcedure(() => move("down")),
                                                    MenuItem.default({label: "Move to top"}).setTriggerProcedure(() => move("top")),
