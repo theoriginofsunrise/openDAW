@@ -1,0 +1,29 @@
+diff --git a/packages/app/studio/public/sw.js b/packages/app/studio/public/sw.js
+index 6215841..a9b5ef7 100644
+--- a/packages/app/studio/public/sw.js
++++ b/packages/app/studio/public/sw.js
+@@ -27,9 +27,11 @@ const precache = async () => {
+     await Promise.all(Array.from({length: 6}, worker))
+ }
+ 
+-// No skipWaiting on purpose: a new version takes over on the next launch, so a session that is
+-// open never loses the lazy-loaded chunks of the version it started with.
+-self.addEventListener("install", event => event.waitUntil(precache()))
++// A new version takes over as soon as it has been downloaded. It used to wait for "the next launch", but on an
++// iPhone the app is mostly resumed and not launched again, so the new version waited for ever and the "new version,
++// please reload" dialog kept bringing back the old one. The open page keeps running the version it started with; the
++// reload that the dialog asks for then loads the new one.
++self.addEventListener("install", event => event.waitUntil(precache().then(() => self.skipWaiting())))
+ 
+ // The page asks for the new build to take over right away (see AppUpdate.ts)
+ self.addEventListener("message", event => {
+@@ -54,8 +56,7 @@ const store = async (request, response) => {
+ }
+ 
+ // Every build has its own cache (see CACHE), so a copy on the phone always belongs to the build this worker
+-// shipped with: serving it first is both the fastest and the most consistent choice. A new build takes over on the
+-// next launch.
++// shipped with: serving it first is both the fastest and the most consistent choice.
+ const cacheFirst = async request => {
+     const cached = await caches.match(request, {ignoreSearch: true})
+     if (cached !== undefined) {return cached}
