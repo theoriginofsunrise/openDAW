@@ -5,6 +5,7 @@ import {signSession, verifySession} from "./jwt"
 import {cleanPath, MaxSingleUpload} from "./files"
 import {Env} from "./types"
 import {cleanShared, SharedPrefix} from "./cleanup"
+import {countUsage, forgetUsage, FreeBytes, kindOf, usageOf} from "./usage"
 import {ClientId, createGoogleSigner, FakeBucket, GoogleSigner, goodClaims, makeEnv} from "./testkit"
 
 const Origin = "https://echo-says-echo.pages.dev"
@@ -398,6 +399,103 @@ describe("the server", () => {
             expect(bucket.objects.has(`${SharedPrefix}rooms/new/audio.wav`)).toBe(true)
             expect([...bucket.objects.keys()].some(key => key.endsWith("/projects/index.json"))).toBe(true)
             expect(await cleanShared(bucket, Date.now())).toBe(0)
+        })
+    })
+
+    describe("what is stored", () => {
+        const store = (key: string, size: number) => {
+            bucket.objects.set(key, {data: new Uint8Array(size), etag: `e-${key}`, uploaded: new Date()})
+        }
+
+        it("tells the kind of a stored file from its place", () => {
+            expect(kindOf("u/abc/projects/p1/project.od")).toBe("projects")
+            expect(kindOf("u/abc/projects/index.json")).toBe("projects")
+            expect(kindOf("u/abc/samples/uuid.wav")).toBe("samples")
+            expect(kindOf("u/shared/rooms/jam/samples/x/audio.wav")).toBe("rooms")
+            expect(kindOf("u/abc/presence/note.json")).toBe("other")
+            expect(kindOf("somewhere/else")).toBe("other")
+        })
+
+        it("counts everything, by kind, and what is the signed-in person's own", async () => {
+            const me = await userIdFor("me@example.com")
+            const other = await userIdFor("other@example.com")
+            store(`u/${me}/projects/p1/project.od`, 1000)
+            store(`u/${me}/projects/p1/meta.json`, 100)
+            store(`u/${me}/samples/a.wav`, 5000)
+            store(`u/${other}/samples/b.wav`, 7000)
+            store(`u/shared/rooms/jam/samples/c/audio.wav`, 300)
+            store(`u/${me}/presence/x.json`, 10)
+            const usage = await countUsage(bucket, me, 1234)
+            expect(usage.freeBytes).toBe(FreeBytes)
+            expect(usage.total).toEqual({bytes: 13410, objects: 6})
+            expect(usage.kinds).toEqual({
+                projects: {bytes: 1100, objects: 2}, samples: {bytes: 12000, objects: 2},
+                rooms: {bytes: 300, objects: 1}, other: {bytes: 10, objects: 1}
+            })
+            expect(usage.mine).toEqual({bytes: 6110, objects: 4})
+            expect(usage.at).toBe(1234)
+        })
+
+        it("lists the biggest files of the person and of the rooms, not of other people", async () => {
+            const me = await userIdFor("me@example.com")
+            const other = await userIdFor("other@example.com")
+            store(`u/${me}/samples/small.wav`, 10)
+            store(`u/${me}/samples/big.wav`, 900)
+            store(`u/${other}/samples/huge.wav`, 99999)
+            store(`u/shared/rooms/jam/audio.wav`, 500)
+            const {largest} = await countUsage(bucket, me, 0)
+            expect(largest.map(entry => entry.path)).toEqual(["samples/big.wav", "shared/rooms/jam/audio.wav", "samples/small.wav"])
+            expect(largest.map(entry => entry.bytes)).toEqual([900, 500, 10])
+        })
+
+        it("keeps only the ten biggest", async () => {
+            const me = await userIdFor("me@example.com")
+            for (let i = 0; i < 70; i++) {store(`u/${me}/samples/f${i}.wav`, 100 + i)}
+            const {largest, total} = await countUsage(bucket, me, 0)
+            expect(total.objects).toBe(70)
+            expect(largest).toHaveLength(10)
+            expect(largest[0].bytes).toBe(169)
+            expect(largest[9].bytes).toBe(160)
+        })
+
+        it("counts a bucket that needs more than one listing", async () => {
+            const me = await userIdFor("me@example.com")
+            for (let i = 0; i < 2300; i++) {store(`u/${me}/samples/f${i}.wav`, 10)}
+            const usage = await countUsage(bucket, me, 0)
+            expect(usage.total).toEqual({bytes: 23000, objects: 2300})
+        })
+
+        it("is an empty count for an empty bucket", async () => {
+            const usage = await countUsage(bucket, "nobody", 0)
+            expect(usage.total).toEqual({bytes: 0, objects: 0})
+            expect(usage.largest).toEqual([])
+        })
+
+        it("reuses a count for a minute, unless a new one is asked for", async () => {
+            forgetUsage()
+            const me = await userIdFor("me@example.com")
+            store(`u/${me}/samples/a.wav`, 100)
+            const first = await usageOf(bucket, me, 1000)
+            store(`u/${me}/samples/b.wav`, 100)
+            expect((await usageOf(bucket, me, 30_000)).total.bytes).toBe(first.total.bytes)
+            expect((await usageOf(bucket, me, 61_001)).total.bytes).toBe(200)
+            store(`u/${me}/samples/c.wav`, 100)
+            expect((await usageOf(bucket, me, 61_500)).total.bytes).toBe(200)
+            expect((await usageOf(bucket, me, 61_600, true)).total.bytes).toBe(300)
+            forgetUsage()
+        })
+
+        it("answers the request, for signed-in people only", async () => {
+            forgetUsage()
+            await put("samples/a.wav", "12345")
+            const response = await call("/usage")
+            expect(response.status).toBe(200)
+            const usage = await response.json() as { total: { bytes: number }, mine: { objects: number }, freeBytes: number }
+            expect(usage.total.bytes).toBe(5)
+            expect(usage.mine.objects).toBe(1)
+            expect(usage.freeBytes).toBe(FreeBytes)
+            expect((await call("/usage", {}, null)).status).toBe(401)
+            forgetUsage()
         })
     })
 })

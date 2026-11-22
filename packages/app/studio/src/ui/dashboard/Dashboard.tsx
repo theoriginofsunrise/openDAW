@@ -6,6 +6,7 @@ import {Html} from "@opendaw/lib-dom"
 import {Resources} from "@/ui/dashboard/Resources"
 import {IntroTiles} from "@/ui/dashboard/IntroTiles"
 import {ActionButtons} from "@/ui/dashboard/ActionButtons"
+import {CloudUsage} from "@/ui/dashboard/CloudUsage"
 import {Backup} from "@/ui/dashboard/Backup"
 import {Sponsors} from "@/ui/dashboard/Sponsors"
 import {Contributors} from "@/ui/dashboard/Contributors"
@@ -28,6 +29,7 @@ export const Dashboard = ({lifecycle, service}: Construct) => (
                 <div className="tagline">Create Music Online</div>
             </header>
             <ActionButtons lifecycle={lifecycle} service={service}/>
+            <CloudUsage lifecycle={lifecycle} service={service}/>
         </div>
         <div className="main">
             <div className="panel">

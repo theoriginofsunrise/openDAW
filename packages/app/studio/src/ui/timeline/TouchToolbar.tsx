@@ -21,8 +21,8 @@ export type TouchActions = {
     paste: () => void
     // removes the selected regions
     remove: () => void
-    // opens this project as a live room: others join it with a link
-    live?: () => void
+    // crossfades the two selected events (see Crossfade)
+    crossfade?: () => void
 }
 
 type Construct = {
@@ -52,8 +52,8 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
     action("Copy", "Copy the selected regions to the clipboard", actions.copy, "action first")
     action("Paste", "Paste at the play position", actions.paste, "action")
     action("Delete", "Delete the selected regions", actions.remove, "action delete")
-    if (actions.live !== undefined) {
-        action("Live", "Open this project as a live room, to work on it together", actions.live, "action live")
+    if (actions.crossfade !== undefined) {
+        action("X-F", "Crossfade two events that follow each other: the second one moves to the lane below and both fade over the overlap", actions.crossfade, "action")
     }
 
     const update: HTMLElement = <button type="button" className="update" title="A new version is ready"

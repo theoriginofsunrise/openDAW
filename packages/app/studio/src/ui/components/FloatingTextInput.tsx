@@ -1,3 +1,4 @@
+import {blurOutcome} from "@/ui/components/TextInputOutcome"
 import css from "./FloatingTextInput.sass?inline"
 import {Errors, isDefined, Point} from "@opendaw/lib-std"
 import {createElement} from "@opendaw/lib-jsx"
@@ -15,7 +16,9 @@ type Construct = {
 
 export const FloatingTextInput = ({resolvers, position, value, unit, numeric}: Construct) => {
     const focusElement = document.activeElement as HTMLElement
-    const inputField: HTMLInputElement = (<input type="text" value={isDefined(value) ? String(value) : ""}/>)
+    const initial = isDefined(value) ? String(value) : ""
+    // enterkeyhint: the return key of a phone keyboard is labelled Done (OK) instead of "return"
+    const inputField: HTMLInputElement = (<input type="text" value={initial} enterkeyhint="done"/>)
     requestAnimationFrame(() => {
         inputField.select()
         inputField.focus()
@@ -42,15 +45,25 @@ export const FloatingTextInput = ({resolvers, position, value, unit, numeric}: C
             element.remove()
             focusElement?.focus()
         }
+        let escaped = false
+        const touch = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches
+        const finish = (): string => numeric ? inputField.value.replace(",", ".") : inputField.value
         inputField.onblur = () => {
+            // The OK or Done key of a phone keyboard closes the keyboard without sending Enter: that ends the typing too.
+            const outcome = blurOutcome({touch, escaped, value: inputField.value, initial})
+            const result = finish()
             remove()
-            reject(Errors.AbortError)
+            if (outcome === "commit") {resolve(result)} else {reject(Errors.AbortError)}
         }
         inputField.onkeydown = (event: KeyboardEvent) => {
-            if (isDefined(event.key) && event.key.toLowerCase() === "enter") {
-                const value = numeric ? inputField.value.replace(",", ".") : inputField.value
+            const key = isDefined(event.key) ? event.key.toLowerCase() : ""
+            if (key === "enter") {
+                const result = finish()
                 remove()
-                resolve(value)
+                resolve(result)
+            } else if (key === "escape") {
+                escaped = true
+                inputField.blur()
             }
         }
     }

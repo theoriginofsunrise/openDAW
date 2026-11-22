@@ -1,6 +1,16 @@
 import {Errors, panic, Progress} from "@opendaw/lib-std"
 import {CloudHandler} from "./CloudHandler"
 
+// What the server counts in the bucket (see cloudflare-server/src/usage.ts)
+export type EchoUsage = {
+    freeBytes: number
+    total: { bytes: number, objects: number }
+    kinds: Record<"projects" | "samples" | "rooms" | "other", { bytes: number, objects: number }>
+    mine: { bytes: number, objects: number }
+    largest: Array<{ path: string, bytes: number }>
+    at: number
+}
+
 export class EchoSessionExpired extends Error {
     constructor() {super("Your login with the storage server ended. Sign in again.")}
 }
@@ -91,6 +101,13 @@ export class EchoCloudHandler implements CloudHandler {
         const response = await this.#send(`/files/${EchoCloudHandler.#encode(path)}`, {method: "DELETE"})
         if (!response.ok) {return panic(`Echo delete failed: ${response.status} ${await response.text()}`)}
         this.#versions.delete(path)
+    }
+
+    // How much is stored, against the free 10 GB. fresh: count again now instead of reusing a count of the last minute.
+    async usage(fresh: boolean = false): Promise<EchoUsage> {
+        const response = await this.#send(`/usage${fresh ? "?fresh=1" : ""}`)
+        if (!response.ok) {return panic(`Echo usage failed: ${response.status} ${await response.text()}`)}
+        return response.json() as Promise<EchoUsage>
     }
 
     // Forget what this device knows about the version of a file, so that the next write does not check it. Only for

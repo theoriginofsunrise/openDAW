@@ -1,5 +1,5 @@
 import css from "./Timeline.sass?inline"
-import {Lifecycle} from "@opendaw/lib-std"
+import {Lifecycle, RuntimeNotifier} from "@opendaw/lib-std"
 import {createElement, Inject} from "@opendaw/lib-jsx"
 import {StudioService} from "@/service/StudioService"
 import {TracksFooter} from "@/ui/timeline/tracks/footer/TracksFooter.tsx"
@@ -13,7 +13,7 @@ import {deferNextFrame, Html} from "@opendaw/lib-dom"
 import {TouchNavigation} from "@/ui/timeline/TouchNavigation"
 import {TouchModifiers} from "@/ui/timeline/TouchModifiers"
 import {TouchToolbar} from "@/ui/timeline/TouchToolbar"
-import {connectRoom} from "@/service/StudioLiveRoomConnect"
+import {Crossfade} from "@/ui/timeline/Crossfade"
 
 const className = Html.adoptStyleSheet(css, "Timeline")
 
@@ -70,7 +70,12 @@ export const Timeline = ({lifecycle, service}: Construct) => {
                     if (selected.length === 0) {return}
                     editing.modify(() => selected.forEach(region => region.box.delete()))
                 },
-                live: () => void connectRoom(service)
+                crossfade: () => {
+                    const outcome = editing.modify(() => Crossfade.apply(project.boxAdapters, regionSelection.selected()))
+                    outcome.ifSome(result => {
+                        if (!result.ok) {void RuntimeNotifier.info({headline: "Crossfade", message: result.reason})}
+                    })
+                }
             }
         })
         document.body.appendChild(toolbar)

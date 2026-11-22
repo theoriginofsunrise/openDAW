@@ -1,5 +1,6 @@
 import {Env} from "./types"
 import {cleanShared} from "./cleanup"
+import {usageOf} from "./usage"
 import {authenticate, authenticateToken, issueSession, verifyGoogleIdToken} from "./auth"
 import {allowedOrigin, preflight, withCors} from "./cors"
 import {
@@ -49,6 +50,11 @@ const route = async (request: Request, env: Env): Promise<Response> => {
     const identity = await authenticate(env, request, Math.floor(nowMs / 1000))
     if (identity === null) {return json({error: "unauthorized"}, 401)}
     const {userId} = identity
+
+    // how much is stored, against the 10 GB that R2 gives for nothing (?fresh=1 counts again right now)
+    if (pathname === "/usage" && method === "GET") {
+        return json(await usageOf(env.BUCKET, userId, nowMs, url.searchParams.get("fresh") === "1"))
+    }
 
     if (pathname === "/auth/me" && method === "GET") {return json({email: identity.email, expiresAt: identity.expiresAt})}
 
