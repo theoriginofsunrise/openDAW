@@ -3,3 +3,4 @@ export * from "./YSync"
 export * from "./YMapper"
 export * from "./RoomServer"
 
+export * from "./RoomAssets"

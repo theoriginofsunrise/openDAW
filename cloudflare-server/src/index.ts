@@ -1,4 +1,5 @@
 import {Env} from "./types"
+import {cleanShared} from "./cleanup"
 import {authenticate, authenticateToken, issueSession, verifyGoogleIdToken} from "./auth"
 import {allowedOrigin, preflight, withCors} from "./cors"
 import {
@@ -68,6 +69,23 @@ const route = async (request: Request, env: Env): Promise<Response> => {
         return json({error: "method_not_allowed"}, 405)
     }
 
+    // The folder that everybody who may sign in shares, for the audio files of a live room: read, write, look. Nothing can
+    // be deleted from here (a daily cleanup does that), and nothing else of anybody's is reachable through it.
+    if (pathname.startsWith("/shared/")) {
+        const decoded = decodePath(pathname, "/shared/")
+        const path = decoded === null ? null : cleanPath(decoded)
+        if (path === null) {return json({error: "bad_path"}, 400)}
+        switch (method) {
+            case "GET":
+                return getFile(env, "shared", path)
+            case "HEAD":
+                return headFile(env, "shared", path)
+            case "PUT":
+                return putFile(env, "shared", path, request)
+        }
+        return json({error: "method_not_allowed"}, 405)
+    }
+
     if (pathname === "/list" && method === "GET") {
         const path = cleanPath(url.searchParams.get("path") ?? "", true)
         if (path === null) {return json({error: "bad_path"}, 400)}
@@ -118,6 +136,11 @@ export {Room} from "./rooms"
 export {Signaling} from "./signaling"
 
 export default {
+    // once an hour (see wrangler.toml)
+    async scheduled(_controller: unknown, env: Env, context: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
+        context.waitUntil(cleanShared(env.BUCKET, Date.now()))
+    },
+
     async fetch(request: Request, env: Env): Promise<Response> {
         // an upgrade answer carries the socket: it must go back untouched
         if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {return socketRoute(request, env)}

@@ -6,6 +6,9 @@ import {issueSession} from "../src/auth"
 import {Env} from "../src/types"
 import {createGoogleSigner, FakeBucket, makeEnv} from "../src/testkit"
 import {EchoCloudHandler, EchoPreconditionFailed, EchoSessionExpired} from "../../packages/studio/core/src/cloud/EchoCloudHandler"
+import {RoomAssets} from "../../packages/studio/core/src/ysync/RoomAssets"
+import {UUID} from "@opendaw/lib-std"
+import {AudioData, WavFile} from "@opendaw/lib-dsp"
 
 const bytes = (...values: Array<number>) => new Uint8Array(values).buffer as ArrayBuffer
 const text = (value: string) => new TextEncoder().encode(value).buffer as ArrayBuffer
@@ -103,5 +106,46 @@ describe("the app's handler and the server together", () => {
         await mine.upload("projects/index.json", text("mine"))
         expect(await other.exists("projects/index.json")).toBe(false)
         expect(await other.list("projects")).toEqual([])
+    })
+
+    describe("audio files handed from one person to another in a room", () => {
+        const asClient = (sessionToken: string, room = "jam") => new RoomAssets("wss://server.example", room, () => sessionToken,
+            (input, init) => worker.fetch(new Request(input as string, {
+                ...init,
+                headers: {...(init?.headers as Record<string, string>), ...(init?.body instanceof ArrayBuffer
+                    ? {"Content-Length": String(init.body.byteLength)} : {})}
+            }), env))
+
+        it("goes from one signed-in person to another, with the sound intact", async () => {
+            const friend = (await issueSession(env, "other@example.com", Math.floor(Date.now() / 1000))).token
+            const data = AudioData.create(48000, 480, 2)
+            data.frames[0].fill(0.5)
+            data.frames[1].fill(-0.25)
+            const id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            await asClient(token).upload(id, WavFile.encodeInts16(data), JSON.stringify({name: "Take 1", bpm: 120}))
+            const [audio, description] = await asClient(friend).fetchSample(UUID.parse(id), () => {})
+            expect(description).toMatchObject({name: "Take 1", bpm: 120})
+            expect(audio.numberOfChannels).toBe(2)
+            expect(audio.frames[0][100]).toBeCloseTo(0.5, 3)
+            expect(audio.frames[1][100]).toBeCloseTo(-0.25, 3)
+        })
+
+        it("keeps rooms apart, and waits for a file that is still being recorded", async () => {
+            const id = "11111111-1111-1111-1111-111111111111"
+            const wav = WavFile.encodeInts16(AudioData.create(48000, 10, 1))
+            await asClient(token, "room-a").upload(id, wav, "{}")
+            expect(await asClient(token, "room-a").exists(id)).toBe(true)
+            expect(await asClient(token, "room-b").exists(id)).toBe(false)
+            const receiver = asClient(token, "room-b")
+            let sleeps = 0
+            await receiver.fetchSample(UUID.parse(id), () => {}, undefined, async () => {
+                if (++sleeps === 2) {await asClient(token, "room-b").upload(id, wav, "{}")}
+            })
+            expect(sleeps).toBe(2)
+        })
+
+        it("refuses someone who is not signed in", async () => {
+            await expect(asClient("garbage").exists("22222222-2222-2222-2222-222222222222")).rejects.toThrow("401")
+        })
     })
 })

@@ -18,6 +18,7 @@ export class ChainedSampleProvider implements SampleFetcher {
 
     attachPeer(provider: SampleFetcher): void {this.#peer = Option.wrap(provider)}
     detachPeer(): void {this.#peer = Option.None}
+    peer(): Option<SampleFetcher> {return this.#peer}
 
     async fetch(uuid: UUID.Bytes, progress: Progress.Handler): Promise<SampleResult> {
         const result = await Promises.tryCatch(this.#cloud.fetch(uuid, progress))

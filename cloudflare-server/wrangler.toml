@@ -23,6 +23,10 @@ class_name = "Signaling"
 tag = "v1"
 new_sqlite_classes = ["Room", "Signaling"]
 
+# The shared folder of the live rooms is cleaned once an hour (what is a day old goes)
+[triggers]
+crons = ["23 * * * *"]
+
 [vars]
 # the Google OAuth client id of the app (same one the app uses to log in)
 GOOGLE_CLIENT_ID = ""

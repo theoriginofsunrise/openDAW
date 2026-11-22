@@ -4,6 +4,7 @@ import {allowedEmails, authenticate, issueSession, userIdFor, verifyGoogleIdToke
 import {signSession, verifySession} from "./jwt"
 import {cleanPath, MaxSingleUpload} from "./files"
 import {Env} from "./types"
+import {cleanShared, SharedPrefix} from "./cleanup"
 import {ClientId, createGoogleSigner, FakeBucket, GoogleSigner, goodClaims, makeEnv} from "./testkit"
 
 const Origin = "https://echo-says-echo.pages.dev"
@@ -352,5 +353,51 @@ describe("the server", () => {
 
     it("knows its own client id", () => {
         expect(ClientId).toContain("googleusercontent")
+    })
+
+    describe("the shared folder of the live rooms", () => {
+        it("lets everybody who may sign in read what another one put there", async () => {
+            const other = (await issueSession(env, "other@example.com", now)).token
+            const stored = await call("/shared/rooms/abc/samples/u1/audio.wav", {
+                method: "PUT", body: "wave", headers: {"Content-Length": "4"}
+            })
+            expect(stored.status).toBe(200)
+            const read = await call("/shared/rooms/abc/samples/u1/audio.wav", {}, other)
+            expect(read.status).toBe(200)
+            expect(await text(read)).toBe("wave")
+            expect((await call("/shared/rooms/abc/samples/u1/audio.wav", {method: "HEAD"}, other)).status).toBe(200)
+            expect((await call("/shared/rooms/abc/samples/u2/audio.wav", {method: "HEAD"}, other)).status).toBe(404)
+        })
+
+        it("needs a login, and does not let anything be deleted or listed", async () => {
+            expect((await call("/shared/rooms/abc/x", {}, null)).status).toBe(401)
+            expect((await call("/shared/rooms/abc/x", {method: "PUT", body: "x", headers: {"Content-Length": "1"}}, null)).status).toBe(401)
+            await call("/shared/rooms/abc/x", {method: "PUT", body: "x", headers: {"Content-Length": "1"}})
+            expect((await call("/shared/rooms/abc/x", {method: "DELETE"})).status).toBe(405)
+            expect((await call("/shared/rooms/abc/x")).status).toBe(200)
+        })
+
+        it("does not reach anybody's own files, and keeps its own apart from them", async () => {
+            await put("secret.txt", "mine")
+            expect((await call("/shared/secret.txt")).status).toBe(404)
+            await call("/shared/open.txt", {method: "PUT", body: "all", headers: {"Content-Length": "3"}})
+            expect((await call("/files/open.txt")).status).toBe(404)
+            expect((await call("/shared/a%2F..%2Fb")).status).toBe(400)
+        })
+
+        it("is cleaned out after a day, and only it", async () => {
+            const day = 24 * 60 * 60 * 1000
+            await call("/shared/rooms/old/audio.wav", {method: "PUT", body: "old", headers: {"Content-Length": "3"}})
+            await call("/shared/rooms/new/audio.wav", {method: "PUT", body: "new", headers: {"Content-Length": "3"}})
+            await put("projects/index.json", "{}")
+            const oldKey = `${SharedPrefix}rooms/old/audio.wav`
+            const stored = bucket.objects.get(oldKey) as { uploaded: Date }
+            stored.uploaded = new Date(Date.now() - 2 * day)
+            expect(await cleanShared(bucket, Date.now())).toBe(1)
+            expect(bucket.objects.has(oldKey)).toBe(false)
+            expect(bucket.objects.has(`${SharedPrefix}rooms/new/audio.wav`)).toBe(true)
+            expect([...bucket.objects.keys()].some(key => key.endsWith("/projects/index.json"))).toBe(true)
+            expect(await cleanShared(bucket, Date.now())).toBe(0)
+        })
     })
 })

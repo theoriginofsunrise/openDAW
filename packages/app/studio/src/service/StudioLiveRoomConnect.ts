@@ -1,7 +1,11 @@
 import {Errors, isDefined, Option, Optional, panic, Progress, RuntimeNotifier, Terminator, TimeSpan, UUID} from "@opendaw/lib-std"
 import {Promises, Wait} from "@opendaw/lib-runtime"
-import {RoomServer, SampleStorage, SoundfontStorage, WclapStorage, Workers, YService} from "@opendaw/studio-core"
+import {firstOf, RoomAssets, RoomServer, SampleStorage, SoundfontStorage, WclapStorage, Workers, YService} from "@opendaw/studio-core"
 import {P2PSession, type SignalingSocket} from "@opendaw/studio-p2p"
+import {AudioFileBox} from "@opendaw/studio-boxes"
+import {AudioData} from "@opendaw/lib-dsp"
+import {SampleMetaData} from "@opendaw/studio-adapters"
+import {RoomAssetSync} from "@/service/RoomAssetSync"
 import {StudioService} from "@/service/StudioService"
 import {showConnectRoomDialog} from "@/service/StudioLiveRoomDialog.tsx"
 import {RoomAwareness, writeIdentity} from "@/service/RoomAwareness"
@@ -101,6 +105,48 @@ export const connectRoom = async (service: StudioService, prefillRoomName?: Opti
         project.own(terminator)
         terminator.own({terminate: () => heartbeat.finalize()})
         terminator.own({terminate: () => window.removeEventListener("pagehide", pagehideHandler)})
+        if (RoomServer.ours()) {
+            // The audio files of the room also go through our server (a shared folder, a day), not only straight between
+            // the devices, which a phone network often does not allow: whichever way delivers first wins.
+            const assets = new RoomAssets(RoomServer.url(), roomName, () => RoomServer.token())
+            const chained = service.chainedSampleProvider
+            const peer = chained.peer()
+            chained.attachPeer({
+                fetch: (uuid, progress) => firstOf<[AudioData, SampleMetaData]>([
+                    signal => assets.fetchSample(uuid, progress, signal),
+                    () => peer.match({
+                        none: () => Promise.reject(new Error("No direct connection")),
+                        some: direct => direct.fetch(uuid, progress)
+                    })
+                ])
+            })
+            const samplePath = (id: string) => `${SampleStorage.Folder}/${id}`
+            const bytesOf = (view: Uint8Array): ArrayBuffer =>
+                view.byteOffset === 0 && view.byteLength === view.buffer.byteLength
+                    ? view.buffer as ArrayBuffer : view.slice().buffer as ArrayBuffer
+            terminator.own(new RoomAssetSync({
+                listIds: () => project.boxGraph.boxes()
+                    .filter(box => box instanceof AudioFileBox)
+                    .map(box => UUID.toString(box.address.uuid)),
+                hasLocal: async id => {
+                    const [audio, description] = await Promise.all([
+                        Workers.Opfs.exists(`${samplePath(id)}/audio.wav`),
+                        Workers.Opfs.exists(`${samplePath(id)}/meta.json`)
+                    ])
+                    return audio && description
+                },
+                readLocal: async id => {
+                    const [wav, meta] = await Promise.all([
+                        Workers.Opfs.read(`${samplePath(id)}/audio.wav`),
+                        Workers.Opfs.read(`${samplePath(id)}/meta.json`)
+                    ])
+                    return {wav: bytesOf(wav), meta: new TextDecoder().decode(meta)}
+                },
+                exists: id => assets.exists(id),
+                upload: (id, wav, meta) => assets.upload(id, wav, meta),
+                warn: (message, error) => console.warn(message, error)
+            }))
+        }
         const roomAwareness = new RoomAwareness(provider.awareness, roomName, userName, userColor)
         terminator.own(roomAwareness)
         terminator.own(Events.subscribe(window, "pointermove", (event: PointerEvent) => {
