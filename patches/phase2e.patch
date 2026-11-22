@@ -1,0 +1,1214 @@
+diff --git a/cloudflare-server/src/index.ts b/cloudflare-server/src/index.ts
+index d150237..1035e62 100644
+--- a/cloudflare-server/src/index.ts
++++ b/cloudflare-server/src/index.ts
+@@ -1,5 +1,6 @@
+ import {Env} from "./types"
+ import {cleanShared} from "./cleanup"
++import {usageOf} from "./usage"
+ import {authenticate, authenticateToken, issueSession, verifyGoogleIdToken} from "./auth"
+ import {allowedOrigin, preflight, withCors} from "./cors"
+ import {
+@@ -50,6 +51,11 @@ const route = async (request: Request, env: Env): Promise<Response> => {
+     if (identity === null) {return json({error: "unauthorized"}, 401)}
+     const {userId} = identity
+ 
++    // how much is stored, against the 10 GB that R2 gives for nothing (?fresh=1 counts again right now)
++    if (pathname === "/usage" && method === "GET") {
++        return json(await usageOf(env.BUCKET, userId, nowMs, url.searchParams.get("fresh") === "1"))
++    }
++
+     if (pathname === "/auth/me" && method === "GET") {return json({email: identity.email, expiresAt: identity.expiresAt})}
+ 
+     if (pathname.startsWith("/files/")) {
+diff --git a/cloudflare-server/src/server.test.ts b/cloudflare-server/src/server.test.ts
+index 5f75a25..8dd5a47 100644
+--- a/cloudflare-server/src/server.test.ts
++++ b/cloudflare-server/src/server.test.ts
+@@ -5,6 +5,7 @@ import {signSession, verifySession} from "./jwt"
+ import {cleanPath, MaxSingleUpload} from "./files"
+ import {Env} from "./types"
+ import {cleanShared, SharedPrefix} from "./cleanup"
++import {countUsage, forgetUsage, FreeBytes, kindOf, usageOf} from "./usage"
+ import {ClientId, createGoogleSigner, FakeBucket, GoogleSigner, goodClaims, makeEnv} from "./testkit"
+ 
+ const Origin = "https://echo-says-echo.pages.dev"
+@@ -400,4 +401,101 @@ describe("the server", () => {
+             expect(await cleanShared(bucket, Date.now())).toBe(0)
+         })
+     })
++
++    describe("what is stored", () => {
++        const store = (key: string, size: number) => {
++            bucket.objects.set(key, {data: new Uint8Array(size), etag: `e-${key}`, uploaded: new Date()})
++        }
++
++        it("tells the kind of a stored file from its place", () => {
++            expect(kindOf("u/abc/projects/p1/project.od")).toBe("projects")
++            expect(kindOf("u/abc/projects/index.json")).toBe("projects")
++            expect(kindOf("u/abc/samples/uuid.wav")).toBe("samples")
++            expect(kindOf("u/shared/rooms/jam/samples/x/audio.wav")).toBe("rooms")
++            expect(kindOf("u/abc/presence/note.json")).toBe("other")
++            expect(kindOf("somewhere/else")).toBe("other")
++        })
++
++        it("counts everything, by kind, and what is the signed-in person's own", async () => {
++            const me = await userIdFor("me@example.com")
++            const other = await userIdFor("other@example.com")
++            store(`u/${me}/projects/p1/project.od`, 1000)
++            store(`u/${me}/projects/p1/meta.json`, 100)
++            store(`u/${me}/samples/a.wav`, 5000)
++            store(`u/${other}/samples/b.wav`, 7000)
++            store(`u/shared/rooms/jam/samples/c/audio.wav`, 300)
++            store(`u/${me}/presence/x.json`, 10)
++            const usage = await countUsage(bucket, me, 1234)
++            expect(usage.freeBytes).toBe(FreeBytes)
++            expect(usage.total).toEqual({bytes: 13410, objects: 6})
++            expect(usage.kinds).toEqual({
++                projects: {bytes: 1100, objects: 2}, samples: {bytes: 12000, objects: 2},
++                rooms: {bytes: 300, objects: 1}, other: {bytes: 10, objects: 1}
++            })
++            expect(usage.mine).toEqual({bytes: 6110, objects: 4})
++            expect(usage.at).toBe(1234)
++        })
++
++        it("lists the biggest files of the person and of the rooms, not of other people", async () => {
++            const me = await userIdFor("me@example.com")
++            const other = await userIdFor("other@example.com")
++            store(`u/${me}/samples/small.wav`, 10)
++            store(`u/${me}/samples/big.wav`, 900)
++            store(`u/${other}/samples/huge.wav`, 99999)
++            store(`u/shared/rooms/jam/audio.wav`, 500)
++            const {largest} = await countUsage(bucket, me, 0)
++            expect(largest.map(entry => entry.path)).toEqual(["samples/big.wav", "shared/rooms/jam/audio.wav", "samples/small.wav"])
++            expect(largest.map(entry => entry.bytes)).toEqual([900, 500, 10])
++        })
++
++        it("keeps only the ten biggest", async () => {
++            const me = await userIdFor("me@example.com")
++            for (let i = 0; i < 70; i++) {store(`u/${me}/samples/f${i}.wav`, 100 + i)}
++            const {largest, total} = await countUsage(bucket, me, 0)
++            expect(total.objects).toBe(70)
++            expect(largest).toHaveLength(10)
++            expect(largest[0].bytes).toBe(169)
++            expect(largest[9].bytes).toBe(160)
++        })
++
++        it("counts a bucket that needs more than one listing", async () => {
++            const me = await userIdFor("me@example.com")
++            for (let i = 0; i < 2300; i++) {store(`u/${me}/samples/f${i}.wav`, 10)}
++            const usage = await countUsage(bucket, me, 0)
++            expect(usage.total).toEqual({bytes: 23000, objects: 2300})
++        })
++
++        it("is an empty count for an empty bucket", async () => {
++            const usage = await countUsage(bucket, "nobody", 0)
++            expect(usage.total).toEqual({bytes: 0, objects: 0})
++            expect(usage.largest).toEqual([])
++        })
++
++        it("reuses a count for a minute, unless a new one is asked for", async () => {
++            forgetUsage()
++            const me = await userIdFor("me@example.com")
++            store(`u/${me}/samples/a.wav`, 100)
++            const first = await usageOf(bucket, me, 1000)
++            store(`u/${me}/samples/b.wav`, 100)
++            expect((await usageOf(bucket, me, 30_000)).total.bytes).toBe(first.total.bytes)
++            expect((await usageOf(bucket, me, 61_001)).total.bytes).toBe(200)
++            store(`u/${me}/samples/c.wav`, 100)
++            expect((await usageOf(bucket, me, 61_500)).total.bytes).toBe(200)
++            expect((await usageOf(bucket, me, 61_600, true)).total.bytes).toBe(300)
++            forgetUsage()
++        })
++
++        it("answers the request, for signed-in people only", async () => {
++            forgetUsage()
++            await put("samples/a.wav", "12345")
++            const response = await call("/usage")
++            expect(response.status).toBe(200)
++            const usage = await response.json() as { total: { bytes: number }, mine: { objects: number }, freeBytes: number }
++            expect(usage.total.bytes).toBe(5)
++            expect(usage.mine.objects).toBe(1)
++            expect(usage.freeBytes).toBe(FreeBytes)
++            expect((await call("/usage", {}, null)).status).toBe(401)
++            forgetUsage()
++        })
++    })
+ })
+diff --git a/cloudflare-server/src/usage.ts b/cloudflare-server/src/usage.ts
+new file mode 100644
+index 0000000..7aece2c
+--- /dev/null
++++ b/cloudflare-server/src/usage.ts
+@@ -0,0 +1,85 @@
++import {R2Bucket} from "./types"
++
++// What Cloudflare gives for nothing in R2: 10 GB stored (GB = a billion bytes there).
++export const FreeBytes = 10_000_000_000
++
++export type Kind = "projects" | "samples" | "rooms" | "other"
++
++export type Portion = { bytes: number, objects: number }
++
++export type Usage = {
++    freeBytes: number
++    // everything in the bucket, everybody's
++    total: Portion
++    // by kind, over the whole bucket
++    kinds: Record<Kind, Portion>
++    // what is in the signed-in person's own folder
++    mine: Portion
++    // the biggest files of the signed-in person's folder and of the shared folder of the live rooms
++    largest: Array<{ path: string, bytes: number }>
++    // when this was counted, milliseconds since 1970
++    at: number
++}
++
++// "u/<person>/projects/..." is a project, ".../samples/..." is audio, "u/shared/..." is what live rooms hand around
++export const kindOf = (key: string): Kind => {
++    const [root, owner, area] = key.split("/")
++    if (root !== "u") {return "other"}
++    if (owner === "shared") {return "rooms"}
++    if (area === "projects") {return "projects"}
++    if (area === "samples") {return "samples"}
++    return "other"
++}
++
++const empty = (): Portion => ({bytes: 0, objects: 0})
++
++const LargestCount = 10
++
++/** Counts what is stored. Lists the bucket (one call per thousand files). */
++export const countUsage = async (bucket: R2Bucket, userId: string, nowMs: number): Promise<Usage> => {
++    const total = empty()
++    const mine = empty()
++    const kinds: Record<Kind, Portion> = {projects: empty(), samples: empty(), rooms: empty(), other: empty()}
++    const biggest: Array<{ path: string, bytes: number }> = []
++    const ownPrefix = `u/${userId}/`
++    let cursor: string | undefined = undefined
++    do {
++        const page: Awaited<ReturnType<R2Bucket["list"]>> = await bucket.list({prefix: "", cursor, limit: 1000})
++        for (const object of page.objects) {
++            total.bytes += object.size
++            total.objects++
++            const kind = kindOf(object.key)
++            kinds[kind].bytes += object.size
++            kinds[kind].objects++
++            const isMine = object.key.startsWith(ownPrefix)
++            if (isMine) {
++                mine.bytes += object.size
++                mine.objects++
++            }
++            if (isMine || kind === "rooms") {
++                biggest.push({path: isMine ? object.key.slice(ownPrefix.length) : object.key.slice("u/".length), bytes: object.size})
++                if (biggest.length > LargestCount * 4) {
++                    biggest.sort((a, b) => b.bytes - a.bytes)
++                    biggest.length = LargestCount
++                }
++            }
++        }
++        cursor = page.truncated ? page.cursor : undefined
++    } while (cursor !== undefined)
++    biggest.sort((a, b) => b.bytes - a.bytes)
++    return {freeBytes: FreeBytes, total, kinds, mine, largest: biggest.slice(0, LargestCount), at: nowMs}
++}
++
++// Counting lists the whole bucket, which is billed per call: a count is reused for a minute.
++const cache = new Map<string, Usage>()
++const MaxAgeMs = 60 * 1000
++
++export const usageOf = async (bucket: R2Bucket, userId: string, nowMs: number, fresh: boolean = false): Promise<Usage> => {
++    const known = cache.get(userId)
++    if (!fresh && known !== undefined && nowMs - known.at < MaxAgeMs) {return known}
++    const usage = await countUsage(bucket, userId, nowMs)
++    cache.set(userId, usage)
++    return usage
++}
++
++export const forgetUsage = (): void => cache.clear()
+diff --git a/packages/app/studio/src/ui/components/FloatingTextInput.tsx b/packages/app/studio/src/ui/components/FloatingTextInput.tsx
+index 2cb954b..157b308 100644
+--- a/packages/app/studio/src/ui/components/FloatingTextInput.tsx
++++ b/packages/app/studio/src/ui/components/FloatingTextInput.tsx
+@@ -1,3 +1,4 @@
++import {blurOutcome} from "@/ui/components/TextInputOutcome"
+ import css from "./FloatingTextInput.sass?inline"
+ import {Errors, isDefined, Point} from "@opendaw/lib-std"
+ import {createElement} from "@opendaw/lib-jsx"
+@@ -15,7 +16,9 @@ type Construct = {
+ 
+ export const FloatingTextInput = ({resolvers, position, value, unit, numeric}: Construct) => {
+     const focusElement = document.activeElement as HTMLElement
+-    const inputField: HTMLInputElement = (<input type="text" value={isDefined(value) ? String(value) : ""}/>)
++    const initial = isDefined(value) ? String(value) : ""
++    // enterkeyhint: the return key of a phone keyboard is labelled Done (OK) instead of "return"
++    const inputField: HTMLInputElement = (<input type="text" value={initial} enterkeyhint="done"/>)
+     requestAnimationFrame(() => {
+         inputField.select()
+         inputField.focus()
+@@ -42,15 +45,25 @@ export const FloatingTextInput = ({resolvers, position, value, unit, numeric}: C
+             element.remove()
+             focusElement?.focus()
+         }
++        let escaped = false
++        const touch = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches
++        const finish = (): string => numeric ? inputField.value.replace(",", ".") : inputField.value
+         inputField.onblur = () => {
++            // The OK or Done key of a phone keyboard closes the keyboard without sending Enter: that ends the typing too.
++            const outcome = blurOutcome({touch, escaped, value: inputField.value, initial})
++            const result = finish()
+             remove()
+-            reject(Errors.AbortError)
++            if (outcome === "commit") {resolve(result)} else {reject(Errors.AbortError)}
+         }
+         inputField.onkeydown = (event: KeyboardEvent) => {
+-            if (isDefined(event.key) && event.key.toLowerCase() === "enter") {
+-                const value = numeric ? inputField.value.replace(",", ".") : inputField.value
++            const key = isDefined(event.key) ? event.key.toLowerCase() : ""
++            if (key === "enter") {
++                const result = finish()
+                 remove()
+-                resolve(value)
++                resolve(result)
++            } else if (key === "escape") {
++                escaped = true
++                inputField.blur()
+             }
+         }
+     }
+diff --git a/packages/app/studio/src/ui/components/TextInputOutcome.test.ts b/packages/app/studio/src/ui/components/TextInputOutcome.test.ts
+new file mode 100644
+index 0000000..3054413
+--- /dev/null
++++ b/packages/app/studio/src/ui/components/TextInputOutcome.test.ts
+@@ -0,0 +1,24 @@
++import {describe, expect, it} from "vitest"
++import {blurOutcome} from "./TextInputOutcome"
++
++describe("blurOutcome", () => {
++    it("keeps what was typed when a phone keyboard is closed with OK", () => {
++        expect(blurOutcome({touch: true, escaped: false, value: "My Song 2", initial: "My Song"})).toBe("commit")
++    })
++
++    it("drops it when nothing changed", () => {
++        expect(blurOutcome({touch: true, escaped: false, value: "My Song", initial: "My Song"})).toBe("cancel")
++    })
++
++    it("drops it after Escape", () => {
++        expect(blurOutcome({touch: true, escaped: true, value: "changed", initial: "My Song"})).toBe("cancel")
++    })
++
++    it("keeps clicking away with a mouse as 'never mind'", () => {
++        expect(blurOutcome({touch: false, escaped: false, value: "changed", initial: "My Song"})).toBe("cancel")
++    })
++
++    it("accepts an emptied field as a change the caller can judge", () => {
++        expect(blurOutcome({touch: true, escaped: false, value: "", initial: "My Song"})).toBe("commit")
++    })
++})
+diff --git a/packages/app/studio/src/ui/components/TextInputOutcome.ts b/packages/app/studio/src/ui/components/TextInputOutcome.ts
+new file mode 100644
+index 0000000..42c9161
+--- /dev/null
++++ b/packages/app/studio/src/ui/components/TextInputOutcome.ts
+@@ -0,0 +1,10 @@
++export type TextInputOutcome = "commit" | "cancel"
++
++/**
++ * What happens when the text field of a floating input loses the focus. On a phone that is how the keyboard's OK or
++ * Done key ends the typing (it closes the keyboard, it does not send Enter): what was typed is kept. Nothing typed, or
++ * Escape, or a mouse (where clicking away has always meant "never mind"): it is dropped.
++ */
++export const blurOutcome = ({touch, escaped, value, initial}: {
++    touch: boolean, escaped: boolean, value: string, initial: string
++}): TextInputOutcome => !escaped && touch && value !== initial ? "commit" : "cancel"
+diff --git a/packages/app/studio/src/ui/dashboard/CloudUsage.sass b/packages/app/studio/src/ui/dashboard/CloudUsage.sass
+new file mode 100644
+index 0000000..974fae7
+--- /dev/null
++++ b/packages/app/studio/src/ui/dashboard/CloudUsage.sass
+@@ -0,0 +1,45 @@
++component
++  display: flex
++  justify-content: center
++
++  > button
++    display: flex
++    align-items: center
++    column-gap: 0.75em
++    padding: 0.375em 1em
++    border-radius: 999px
++    border: 1px solid rgba(white, 0.12)
++    background: none
++    color: var(--color-dark)
++    font: inherit
++    font-size: 0.8125em
++    cursor: pointer
++    white-space: nowrap
++
++    &:hover
++      border-color: rgba(white, 0.4)
++      color: white
++
++    > .bar
++      position: relative
++      width: 7em
++      height: 0.5em
++      border-radius: 999px
++      overflow: hidden
++      background: rgba(white, 0.1)
++
++      > .fill
++        position: absolute
++        inset: 0 auto 0 0
++        width: 0
++        border-radius: 999px
++        background: var(--color-green)
++
++    &.warn > .bar > .fill
++      background: var(--color-orange)
++
++    &.full > .bar > .fill
++      background: var(--color-red)
++
++    &.unknown
++      opacity: 0.6
+diff --git a/packages/app/studio/src/ui/dashboard/CloudUsage.tsx b/packages/app/studio/src/ui/dashboard/CloudUsage.tsx
+new file mode 100644
+index 0000000..f1ded42
+--- /dev/null
++++ b/packages/app/studio/src/ui/dashboard/CloudUsage.tsx
+@@ -0,0 +1,99 @@
++import {createElement} from "@opendaw/lib-jsx"
++import {Lifecycle, RuntimeNotifier, RuntimeSignal} from "@opendaw/lib-std"
++import {Html} from "@opendaw/lib-dom"
++import {EchoCloudHandler, EchoUsage, ProjectSignals} from "@opendaw/studio-core"
++import {EchoSync} from "@/EchoSync"
++import {detailsText, fractionUsed, levelOf, summaryText} from "@/ui/dashboard/UsageText"
++import type {StudioService} from "@/service/StudioService"
++import css from "./CloudUsage.sass?inline"
++
++const className = Html.adoptStyleSheet(css, "CloudUsage")
++
++type Construct = {
++    lifecycle: Lifecycle
++    service: StudioService
++}
++
++// Phone fork: how much of the free 10 GB of the storage server is used. It is the early warning for audio or projects
++// that were made by mistake and sit there unseen: a tap lists where the space goes and the biggest files.
++export const CloudUsage = ({lifecycle, service}: Construct) => {
++    const auth = service.cloudAuthManager
++    const label: HTMLElement = <span>Cloud storage</span>
++    const fill: HTMLElement = <div className="fill"/>
++    const button: HTMLElement = (
++        <button type="button" className="unknown" title="How much of the free 10 GB is used. Tap for details." onclick={() => void details()}>
++            {label}
++            <div className="bar">{fill}</div>
++        </button>
++    )
++    const root: HTMLElement = <div className={className}>{button}</div>
++    let last: EchoUsage | null = null
++    let timer: ReturnType<typeof setTimeout> | undefined
++
++    const handler = (): EchoCloudHandler | null => {
++        const peeked = auth.peekHandler("Echo")
++        return peeked instanceof EchoCloudHandler ? peeked : null
++    }
++
++    const show = (usage: EchoUsage): void => {
++        last = usage
++        const fraction = fractionUsed(usage.total.bytes, usage.freeBytes)
++        button.classList.remove("unknown", "ok", "warn", "full")
++        button.classList.add(levelOf(fraction))
++        fill.style.width = `${Math.min(100, fraction * 100)}%`
++        label.textContent = `Cloud storage  ${summaryText(usage)}`
++        button.title = `${summaryText(usage)} of the free storage. Tap for details.`
++    }
++
++    const refresh = async (fresh: boolean = false): Promise<void> => {
++        const active = handler()
++        // nobody is signed in: nothing to show (the Sync button asks for the login)
++        root.style.display = active === null ? "none" : ""
++        if (active === null) {return}
++        try {
++            show(await active.usage(fresh))
++        } catch (error) {
++            console.warn("Cloud usage unavailable", error)
++            button.classList.add("unknown")
++        }
++    }
++
++    const details = async (): Promise<void> => {
++        await refresh(true)
++        if (last === null) {return}
++        // the names of the audio files, to tell which one is which
++        const names: Record<string, string> = {}
++        const active = handler()
++        if (active !== null) {
++            try {
++                const catalog = JSON.parse(new TextDecoder().decode(await active.download("samples/index.json")))
++                for (const sample of catalog as Array<{ uuid: string, name: string }>) {names[sample.uuid.toLowerCase()] = sample.name}
++            } catch (_error) {/* the ids are shown instead */}
++        }
++        await RuntimeNotifier.info({headline: "Cloud storage", message: detailsText(last, names)})
++    }
++
++    const schedule = (): void => {
++        clearTimeout(timer)
++        timer = setTimeout(() => void refresh(), 1500)
++    }
++    const onVisible = (): void => {if (document.visibilityState === "visible") {schedule()}}
++    const interval = setInterval(() => void refresh(), 5 * 60 * 1000)
++    document.addEventListener("visibilitychange", onVisible)
++    lifecycle.ownAll(
++        auth.subscribeHandler(schedule),
++        RuntimeSignal.subscribe(signal => signal === ProjectSignals.StorageUpdated && schedule()),
++        {
++            terminate: () => {
++                clearInterval(interval)
++                clearTimeout(timer)
++                document.removeEventListener("visibilitychange", onVisible)
++            }
++        }
++    )
++    // a sync that ends may have added files: count again
++    EchoSync.get()?.state.subscribe(owner => {if (owner.getValue() === "idle") {schedule()}})
++    if (!auth.echoEnabled) {root.style.display = "none"}
++    void refresh()
++    return root
++}
+diff --git a/packages/app/studio/src/ui/dashboard/Dashboard.tsx b/packages/app/studio/src/ui/dashboard/Dashboard.tsx
+index 9730ca5..2d21000 100644
+--- a/packages/app/studio/src/ui/dashboard/Dashboard.tsx
++++ b/packages/app/studio/src/ui/dashboard/Dashboard.tsx
+@@ -6,6 +6,7 @@ import {Html} from "@opendaw/lib-dom"
+ import {Resources} from "@/ui/dashboard/Resources"
+ import {IntroTiles} from "@/ui/dashboard/IntroTiles"
+ import {ActionButtons} from "@/ui/dashboard/ActionButtons"
++import {CloudUsage} from "@/ui/dashboard/CloudUsage"
+ import {Backup} from "@/ui/dashboard/Backup"
+ import {Sponsors} from "@/ui/dashboard/Sponsors"
+ import {Contributors} from "@/ui/dashboard/Contributors"
+@@ -28,6 +29,7 @@ export const Dashboard = ({lifecycle, service}: Construct) => (
+                 <div className="tagline">Create Music Online</div>
+             </header>
+             <ActionButtons lifecycle={lifecycle} service={service}/>
++            <CloudUsage lifecycle={lifecycle} service={service}/>
+         </div>
+         <div className="main">
+             <div className="panel">
+diff --git a/packages/app/studio/src/ui/dashboard/UsageText.test.ts b/packages/app/studio/src/ui/dashboard/UsageText.test.ts
+new file mode 100644
+index 0000000..a05a3fc
+--- /dev/null
++++ b/packages/app/studio/src/ui/dashboard/UsageText.test.ts
+@@ -0,0 +1,74 @@
++import {describe, expect, it} from "vitest"
++import type {EchoUsage} from "@opendaw/studio-core"
++import {detailsText, formatBytes, fractionUsed, levelOf, summaryText} from "./UsageText"
++
++const usage = (overrides: Partial<EchoUsage> = {}): EchoUsage => ({
++    freeBytes: 10_000_000_000,
++    total: {bytes: 1_234_000_000, objects: 42},
++    kinds: {
++        projects: {bytes: 2_000_000, objects: 8}, samples: {bytes: 1_200_000_000, objects: 30},
++        rooms: {bytes: 30_000_000, objects: 3}, other: {bytes: 2_000, objects: 1}
++    },
++    mine: {bytes: 1_000_000_000, objects: 35},
++    largest: [{path: "samples/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.wav", bytes: 400_000_000}, {path: "projects/index.json", bytes: 2_000}],
++    at: 0, ...overrides
++})
++
++describe("formatBytes", () => {
++    it("uses the unit that fits, a billion bytes to the gigabyte", () => {
++        expect(formatBytes(0)).toBe("0 B")
++        expect(formatBytes(999)).toBe("999 B")
++        expect(formatBytes(1_500)).toBe("1.5 kB")
++        expect(formatBytes(48_000)).toBe("48 kB")
++        expect(formatBytes(2_500_000)).toBe("2.5 MB")
++        expect(formatBytes(150_000_000)).toBe("150 MB")
++        expect(formatBytes(1_234_000_000)).toBe("1.23 GB")
++        expect(formatBytes(10_000_000_000)).toBe("10.00 GB")
++    })
++})
++
++describe("level", () => {
++    it("is green, orange, red", () => {
++        expect(levelOf(0)).toBe("ok")
++        expect(levelOf(0.69)).toBe("ok")
++        expect(levelOf(0.7)).toBe("warn")
++        expect(levelOf(0.89)).toBe("warn")
++        expect(levelOf(0.9)).toBe("full")
++        expect(levelOf(1.4)).toBe("full")
++    })
++
++    it("compares with what is free, and does not divide by nothing", () => {
++        expect(fractionUsed(5_000_000_000, 10_000_000_000)).toBe(0.5)
++        expect(fractionUsed(1, 0)).toBe(1)
++        expect(fractionUsed(-5, 10)).toBe(0)
++    })
++})
++
++describe("text", () => {
++    it("sums up in one line", () => {
++        expect(summaryText(usage())).toBe("1.23 GB of 10.00 GB (12%)")
++    })
++
++    it("says where the space goes", () => {
++        const text = detailsText(usage())
++        expect(text).toContain("Audio: 1.23 GB".replace("1.23", "1.20"))
++        expect(text).toContain("Projects: 2.0 MB in 8 files")
++        expect(text).toContain("Live room transfers (deleted after a day): 30 MB in 3 files")
++        expect(text).toContain("Other (notes, lists): 2.0 kB in 1 file")
++        expect(text).toContain("Your own folder: 1.00 GB in 35 files")
++    })
++
++    it("names the biggest audio files when the list of samples knows them", () => {
++        const text = detailsText(usage(), {"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee": "Guitar take 3"})
++        expect(text).toContain("400 MB  Guitar take 3 (samples)")
++        expect(text).toContain("2.0 kB  projects/index.json")
++        const unnamed = detailsText(usage())
++        expect(unnamed).toContain("400 MB  samples/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.wav")
++    })
++
++    it("has no list of big files for an empty cloud", () => {
++        const text = detailsText(usage({largest: [], total: {bytes: 0, objects: 0}}))
++        expect(text).not.toContain("Biggest files")
++        expect(text.startsWith("0 B of 10.00 GB (0%)")).toBe(true)
++    })
++})
+diff --git a/packages/app/studio/src/ui/dashboard/UsageText.ts b/packages/app/studio/src/ui/dashboard/UsageText.ts
+new file mode 100644
+index 0000000..2e8fc5a
+--- /dev/null
++++ b/packages/app/studio/src/ui/dashboard/UsageText.ts
+@@ -0,0 +1,50 @@
++import type {EchoUsage} from "@opendaw/studio-core"
++
++// Sizes the way Cloudflare counts them: a gigabyte is a billion bytes.
++export const formatBytes = (bytes: number): string => {
++    if (bytes < 1_000) {return `${Math.round(bytes)} B`}
++    if (bytes < 1_000_000) {return `${(bytes / 1_000).toFixed(bytes < 10_000 ? 1 : 0)} kB`}
++    if (bytes < 1_000_000_000) {return `${(bytes / 1_000_000).toFixed(bytes < 10_000_000 ? 1 : 0)} MB`}
++    return `${(bytes / 1_000_000_000).toFixed(2)} GB`
++}
++
++export const fractionUsed = (bytes: number, freeBytes: number): number =>
++    freeBytes <= 0 ? 1 : Math.max(0, bytes / freeBytes)
++
++export type Level = "ok" | "warn" | "full"
++
++// green until 70%, orange until 90%, red from there: past 100% it is no longer free
++export const levelOf = (fraction: number): Level => fraction >= 0.9 ? "full" : fraction >= 0.7 ? "warn" : "ok"
++
++export const summaryText = (usage: EchoUsage): string => {
++    const fraction = fractionUsed(usage.total.bytes, usage.freeBytes)
++    return `${formatBytes(usage.total.bytes)} of ${formatBytes(usage.freeBytes)} (${Math.round(fraction * 100)}%)`
++}
++
++const files = (count: number): string => `${count} file${count === 1 ? "" : "s"}`
++
++const kindLabels: ReadonlyArray<[keyof EchoUsage["kinds"], string]> = [
++    ["samples", "Audio"], ["projects", "Projects"], ["rooms", "Live room transfers (deleted after a day)"], ["other", "Other (notes, lists)"]
++]
++
++/**
++ * The details window: where the space goes, and the biggest files. `names` turns the id of an audio file into the name
++ * it has in the list of samples.
++ */
++export const detailsText = (usage: EchoUsage, names: Readonly<Record<string, string>> = {}): string => {
++    const lines = [summaryText(usage), ""]
++    for (const [kind, label] of kindLabels) {
++        const portion = usage.kinds[kind]
++        lines.push(`${label}: ${formatBytes(portion.bytes)} in ${files(portion.objects)}`)
++    }
++    lines.push("", `Your own folder: ${formatBytes(usage.mine.bytes)} in ${files(usage.mine.objects)}`)
++    if (usage.largest.length > 0) {
++        lines.push("", "Biggest files:")
++        for (const {path, bytes} of usage.largest) {
++            const id = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(path)?.[1]
++            const name = id === undefined ? undefined : names[id.toLowerCase()]
++            lines.push(`${formatBytes(bytes)}  ${name === undefined ? path : `${name} (${path.split("/")[0]})`}`)
++        }
++    }
++    return lines.join("\n")
++}
+diff --git a/packages/app/studio/src/ui/timeline/Crossfade.test.ts b/packages/app/studio/src/ui/timeline/Crossfade.test.ts
+new file mode 100644
+index 0000000..e9f0840
+--- /dev/null
++++ b/packages/app/studio/src/ui/timeline/Crossfade.test.ts
+@@ -0,0 +1,310 @@
++import {describe, expect, it} from "vitest"
++import {isDefined, Option, Terminable, UUID} from "@opendaw/lib-std"
++import {PPQN, ppqn} from "@opendaw/lib-dsp"
++import {
++    AnyRegionBoxAdapter,
++    AudioRegionBoxAdapter,
++    AudioUnitFactory,
++    ProjectSkeleton,
++    TrackBoxAdapter,
++    TrackType
++} from "@opendaw/studio-adapters"
++import {AudioUnitType} from "@opendaw/studio-enums"
++import {AudioFileBox, AudioRegionBox, AudioUnitBox, TrackBox, ValueEventCollectionBox} from "@opendaw/studio-boxes"
++import type {Project} from "@opendaw/studio-core"
++import {Crossfade} from "./Crossfade"
++
++if (!isDefined(Reflect.get(globalThis, "AudioWorkletNode"))) {
++    Reflect.set(globalThis, "AudioWorkletNode", class {})
++}
++
++const sampleManager = () => ({
++    getOrCreate: (uuid: UUID.Bytes) => ({
++        get data() {return Option.None}, get peaks() {return Option.None}, get uuid() {return uuid},
++        get state() {return {type: "idle"} as const}, invalidate() {}, subscribe: () => Terminable.Empty
++    }), record: () => {}, invalidate: () => {}, remove: () => {}, register: () => Terminable.Empty
++})
++
++type Spec = { position: ppqn, duration: ppqn, loopOffset?: ppqn, loopDuration?: ppqn }
++
++const setup = async () => {
++    const {Project} = await import("@opendaw/studio-core")
++    const skeleton = ProjectSkeleton.empty({createDefaultUser: true, createOutputMaximizer: false})
++    const {boxGraph, mandatoryBoxes: {primaryAudioUnitBox}} = skeleton
++    boxGraph.beginTransaction()
++    const trackBox = TrackBox.create(boxGraph, UUID.generate(), box => {
++        box.type.setValue(TrackType.Audio)
++        box.tracks.refer(primaryAudioUnitBox.tracks)
++        box.target.refer(primaryAudioUnitBox)
++    })
++    boxGraph.endTransaction()
++    const project: Project = Project.fromSkeleton({
++        audioContext: undefined, audioWorklets: undefined, sampleManager: sampleManager(),
++        soundfontManager: undefined, sampleService: undefined, soundfontService: undefined
++    } as unknown as Parameters<typeof Project.fromSkeleton>[0], skeleton)
++    const audioUnitBox = primaryAudioUnitBox
++    const region = (lane: TrackBox, {position, duration, loopOffset = 0, loopDuration = duration}: Spec): AudioRegionBoxAdapter =>
++        project.boxAdapters.adapterFor(project.editing.modify(() => {
++            const events = ValueEventCollectionBox.create(project.boxGraph, UUID.generate())
++            // a file has to be used by an event the moment it exists: every event gets its own
++            const fileBox = AudioFileBox.create(project.boxGraph, UUID.generate(), box => box.endInSeconds.setValue(60))
++            return AudioRegionBox.create(project.boxGraph, UUID.generate(), box => {
++                box.position.setValue(position)
++                box.duration.setValue(duration)
++                box.loopOffset.setValue(loopOffset)
++                box.loopDuration.setValue(loopDuration)
++                box.regions.refer(lane.regions)
++                box.file.refer(fileBox)
++                box.events.refer(events.owners)
++            })
++        }).unwrap(), AudioRegionBoxAdapter)
++    const lanesOf = (unit: AudioUnitBox) => unit.tracks.pointerHub.incoming().map(({box}) => box as TrackBox)
++        .sort((a, b) => a.index.getValue() - b.index.getValue())
++    const run = (...selected: ReadonlyArray<AnyRegionBoxAdapter>) =>
++        project.editing.modify(() => Crossfade.apply(project.boxAdapters, selected)).unwrap()
++    const laneOf = (adapter: AudioRegionBoxAdapter) => adapter.box.regions.targetVertex.unwrap().box as TrackBox
++    // a second audio unit, with a lane of its own
++    const otherUnit = () => project.editing.modify(() => {
++        const unit = AudioUnitFactory.create(project.skeleton, AudioUnitType.Bus, Option.None)
++        const lane = TrackBox.create(project.boxGraph, UUID.generate(), box => {
++            box.type.setValue(TrackType.Audio)
++            box.tracks.refer(unit.tracks)
++            box.target.refer(unit)
++        })
++        return {unit, lane}
++    }).unwrap()
++    return {project, audioUnitBox, trackBox, region, lanesOf, run, laneOf, otherUnit}
++}
++
++const snapshot = (...adapters: ReadonlyArray<AudioRegionBoxAdapter>) => adapters.map(adapter => ({
++    position: adapter.position, duration: adapter.duration, loopOffset: adapter.loopOffset,
++    fadeIn: adapter.fading.in, fadeOut: adapter.fading.out, lane: adapter.box.regions.targetVertex.unwrap().box.address.toString()
++}))
++
++// A recording that was cut in the middle: the two halves touch, and the sound goes on on both sides of the cut.
++const cutPair = (region: Awaited<ReturnType<typeof setup>>["region"], lane: TrackBox, at: ppqn = PPQN.Quarter, length: ppqn = PPQN.Quarter * 2) =>
++    [region(lane, {position: 0, duration: at, loopOffset: 0, loopDuration: length}),
++        region(lane, {position: at, duration: length - at, loopOffset: at, loopDuration: length})] as const
++
++describe("Crossfade", () => {
++    it("pulls two touching events into each other and fades them over the same stretch", async () => {
++        const {region, trackBox, audioUnitBox, lanesOf, run, laneOf} = await setup()
++        const [a, b] = cutPair(region, trackBox)
++        expect(lanesOf(audioUnitBox)).toHaveLength(1)
++        const result = run(a, b)
++        expect(result).toEqual({ok: true, length: 240, movedToNextLane: true})
++        // the first one is pulled out by half the length, the second one is pulled back by half the length
++        expect(a.position).toBe(0)
++        expect(a.duration).toBe(960 + 120)
++        expect(b.position).toBe(960 - 120)
++        expect(b.duration).toBe(960 + 120)
++        // the sound stays where it was: the second one starts earlier in the file by exactly as much
++        expect(b.loopOffset).toBe(960 - 120)
++        expect(b.position - b.loopOffset).toBe(960 - 960)
++        // the fades are the overlap, to the tick
++        expect(a.fading.out).toBe(240)
++        expect(b.fading.in).toBe(240)
++        expect(a.complete - b.position).toBe(240)
++        // the second one is now on a lane of its own, the first one stayed
++        expect(lanesOf(audioUnitBox)).toHaveLength(2)
++        expect(laneOf(a)).toBe(trackBox)
++        expect(laneOf(b)).toBe(lanesOf(audioUnitBox)[1])
++        expect(laneOf(b).type.getValue()).toBe(TrackType.Audio)
++        expect(laneOf(b).index.getValue()).toBe(trackBox.index.getValue() + 1)
++    })
++
++    it("closes a small gap from both sides, to the whole tick, odd gaps too", async () => {
++        for (const gap of [140, 141]) {
++            const {region, trackBox, run} = await setup()
++            const a = region(trackBox, {position: 0, duration: 960, loopOffset: 0, loopDuration: 1920})
++            const b = region(trackBox, {position: 960 + gap, duration: 960, loopOffset: 960, loopDuration: 1920})
++            const result = run(a, b)
++            expect(result).toEqual({ok: true, length: 240, movedToNextLane: true})
++            expect(a.complete - b.position).toBe(240)
++            expect(a.fading.out).toBe(240)
++            expect(b.fading.in).toBe(240)
++            expect(Number.isInteger(b.position)).toBe(true)
++            // the junction (the middle of the old gap) is the middle of the new overlap
++            // (a whole tick is the finest the position can be, so the middle can be half a tick off)
++            expect(Math.abs((a.complete + b.position) / 2 - (960 + gap / 2))).toBeLessThanOrEqual(0.5)
++        }
++    })
++
++    it("takes only as much as the sound beyond the ends allows", async () => {
++        const {region, trackBox, run} = await setup()
++        // 100 ticks of sound left after the first event, plenty before the second
++        const a = region(trackBox, {position: 0, duration: 900, loopOffset: 0, loopDuration: 1000})
++        const b = region(trackBox, {position: 900, duration: 900, loopOffset: 900, loopDuration: 1800})
++        const result = run(a, b)
++        expect(result).toEqual({ok: true, length: 200, movedToNextLane: true})
++        expect(a.loopOffset + a.duration).toBe(a.loopDuration) // used up all of it, and not a tick more
++        expect(b.loopOffset).toBe(800)
++    })
++
++    it("says no when there is no sound to spare after the first event or before the second", async () => {
++        const first = await setup()
++        const noTail = first.region(first.trackBox, {position: 0, duration: 960, loopOffset: 0, loopDuration: 960})
++        const withHead = first.region(first.trackBox, {position: 960, duration: 960, loopOffset: 500, loopDuration: 1460})
++        const before = snapshot(noTail, withHead)
++        const result = first.run(noTail, withHead)
++        expect(result).toMatchObject({ok: false})
++        expect((result as { reason: string }).reason).toContain("not enough sound")
++        expect(snapshot(noTail, withHead)).toEqual(before)
++        expect(first.lanesOf(first.audioUnitBox)).toHaveLength(1)
++
++        const second = await setup()
++        const withTail = second.region(second.trackBox, {position: 0, duration: 960, loopOffset: 0, loopDuration: 1920})
++        const noHead = second.region(second.trackBox, {position: 960, duration: 960, loopOffset: 0, loopDuration: 960})
++        expect(second.run(withTail, noHead)).toMatchObject({ok: false})
++        const tiny = await setup()
++        const a = tiny.region(tiny.trackBox, {position: 0, duration: 960, loopOffset: 0, loopDuration: 970})
++        const b = tiny.region(tiny.trackBox, {position: 960, duration: 960, loopOffset: 10, loopDuration: 970})
++        expect(tiny.run(a, b)).toMatchObject({ok: false}) // 20 ticks of overlap is not a crossfade
++    })
++
++    it("says no when the events are too far apart", async () => {
++        const {region, trackBox, run, lanesOf, audioUnitBox} = await setup()
++        const a = region(trackBox, {position: 0, duration: 960, loopOffset: 0, loopDuration: 1920})
++        const b = region(trackBox, {position: 960 + Crossfade.MaxGap + 1, duration: 960, loopOffset: 960, loopDuration: 1920})
++        const result = run(a, b)
++        expect(result).toMatchObject({ok: false})
++        expect((result as { reason: string }).reason).toContain("too far")
++        expect(lanesOf(audioUnitBox)).toHaveLength(1)
++    })
++
++    it("needs exactly two audio events of the same audio unit", async () => {
++        const {region, trackBox, run, otherUnit} = await setup()
++        const [a, b] = cutPair(region, trackBox)
++        const c = region(trackBox, {position: 5000, duration: 960, loopDuration: 1920, loopOffset: 0})
++        expect(run(a)).toMatchObject({ok: false})
++        expect(run()).toMatchObject({ok: false})
++        expect(run(a, b, c)).toMatchObject({ok: false})
++        const other = otherUnit()
++        const elsewhere = region(other.lane, {position: 960, duration: 960, loopOffset: 960, loopDuration: 1920})
++        const result = run(a, elsewhere)
++        expect(result).toMatchObject({ok: false})
++        expect((result as { reason: string }).reason).toContain("different tracks")
++    })
++
++    it("does not care in which order the two were selected", async () => {
++        const {region, trackBox, run} = await setup()
++        const [a, b] = cutPair(region, trackBox)
++        expect(run(b, a)).toEqual({ok: true, length: 240, movedToNextLane: true})
++        expect(a.fading.out).toBe(240)
++        expect(b.fading.in).toBe(240)
++    })
++
++    it("uses the same two lanes for every crossfade of the track", async () => {
++        const {region, trackBox, audioUnitBox, lanesOf, run, laneOf} = await setup()
++        // one recording cut in four: A B C D touch
++        const length = PPQN.Quarter * 4
++        const parts = [0, 1, 2, 3].map(index => region(trackBox, {
++            position: index * 960, duration: 960, loopOffset: index * 960, loopDuration: length
++        }))
++        const [a, b, c, d] = parts
++        expect(run(a, b)).toMatchObject({ok: true, movedToNextLane: true})
++        expect(lanesOf(audioUnitBox)).toHaveLength(2)
++        // b is on the second lane, c on the first: no lane needs to be made, nothing moves
++        expect(run(b, c)).toMatchObject({ok: true, movedToNextLane: false})
++        expect(lanesOf(audioUnitBox)).toHaveLength(2)
++        // c and d are on the same lane again: d goes to the same second lane
++        expect(run(c, d)).toMatchObject({ok: true, movedToNextLane: true})
++        expect(lanesOf(audioUnitBox)).toHaveLength(2)
++        const [first, second] = lanesOf(audioUnitBox)
++        expect([laneOf(a), laneOf(b), laneOf(c), laneOf(d)]).toEqual([first, second, first, second])
++        // every junction is a crossfade of the same length, the fades meet exactly
++        for (const [left, right] of [[a, b], [b, c], [c, d]] as const) {
++            expect(left.complete - right.position).toBe(240)
++            expect(left.fading.out).toBe(240)
++            expect(right.fading.in).toBe(240)
++        }
++    })
++
++    it("uses a lane that is already below, instead of making another one", async () => {
++        const {region, trackBox, audioUnitBox, lanesOf, run, laneOf, project} = await setup()
++        const below = project.editing.modify(() => TrackBox.create(project.boxGraph, UUID.generate(), box => {
++            box.type.setValue(TrackType.Audio)
++            box.index.setValue(trackBox.index.getValue() + 1)
++            box.tracks.refer(audioUnitBox.tracks)
++            box.target.refer(audioUnitBox)
++        })).unwrap()
++        const [a, b] = cutPair(region, trackBox)
++        expect(run(a, b)).toMatchObject({ok: true, movedToNextLane: true})
++        expect(lanesOf(audioUnitBox)).toHaveLength(2)
++        expect(laneOf(b)).toBe(below)
++    })
++
++    it("does not touch anything when the lane below is busy there", async () => {
++        const {region, trackBox, audioUnitBox, lanesOf, run, project} = await setup()
++        const below = project.editing.modify(() => TrackBox.create(project.boxGraph, UUID.generate(), box => {
++            box.type.setValue(TrackType.Audio)
++            box.index.setValue(trackBox.index.getValue() + 1)
++            box.tracks.refer(audioUnitBox.tracks)
++            box.target.refer(audioUnitBox)
++        })).unwrap()
++        const [a, b] = cutPair(region, trackBox)
++        const blocker = region(below, {position: 900, duration: 200, loopDuration: 200, loopOffset: 0})
++        const before = snapshot(a, b, blocker)
++        const result = run(a, b)
++        expect(result).toMatchObject({ok: false})
++        expect((result as { reason: string }).reason).toContain("lane below")
++        expect(snapshot(a, b, blocker)).toEqual(before)
++        expect(lanesOf(audioUnitBox)).toHaveLength(2)
++    })
++
++    it("does not run into an event that lies between", async () => {
++        const {region, trackBox, run, audioUnitBox, lanesOf} = await setup()
++        const a = region(trackBox, {position: 0, duration: 960, loopOffset: 0, loopDuration: 1920})
++        const between = region(trackBox, {position: 1000, duration: 40, loopOffset: 0, loopDuration: 40})
++        const b = region(trackBox, {position: 1100, duration: 960, loopOffset: 960, loopDuration: 1920})
++        const before = snapshot(a, between, b)
++        const result = run(a, b)
++        expect(result).toMatchObject({ok: false})
++        expect((result as { reason: string }).reason).toContain("in the way")
++        expect(snapshot(a, between, b)).toEqual(before)
++        expect(lanesOf(audioUnitBox)).toHaveLength(1)
++    })
++
++    it("sets the fades of an overlap that is there already, and nothing else", async () => {
++        const {region, trackBox, audioUnitBox, run, project} = await setup()
++        const below = project.editing.modify(() => TrackBox.create(project.boxGraph, UUID.generate(), box => {
++            box.type.setValue(TrackType.Audio)
++            box.index.setValue(trackBox.index.getValue() + 1)
++            box.tracks.refer(audioUnitBox.tracks)
++            box.target.refer(audioUnitBox)
++        })).unwrap()
++        const a = region(trackBox, {position: 0, duration: 1100, loopOffset: 0, loopDuration: 1920})
++        const b = region(below, {position: 900, duration: 1000, loopOffset: 900, loopDuration: 1920})
++        expect(run(a, b)).toEqual({ok: true, length: 200, movedToNextLane: false})
++        expect(a.fading.out).toBe(200)
++        expect(b.fading.in).toBe(200)
++        expect(a.duration).toBe(1100)
++        expect(b.position).toBe(900)
++    })
++
++    it("is one undo step", async () => {
++        const {region, trackBox, audioUnitBox, lanesOf, run, project} = await setup()
++        const [a, b] = cutPair(region, trackBox)
++        const before = snapshot(a, b)
++        run(a, b)
++        expect(lanesOf(audioUnitBox)).toHaveLength(2)
++        project.editing.undo()
++        expect(lanesOf(audioUnitBox)).toHaveLength(1)
++        expect(snapshot(a, b)).toEqual(before)
++        expect(project.boxAdapters.adapterFor(trackBox, TrackBoxAdapter).regions.collection.asArray()).toHaveLength(2)
++    })
++
++    it("keeps an existing fade-in of the first event and fade-out of the second", async () => {
++        const ctx = await setup()
++        const {region, trackBox, run} = ctx
++        const [a, b] = cutPair(region, trackBox)
++        const {project} = ctx
++        project.editing.modify(() => {
++            a.fading.inField.setValue(100)
++            b.fading.outField.setValue(100)
++        })
++        expect(run(a, b)).toMatchObject({ok: true})
++        expect(a.fading.in).toBe(100)
++        expect(b.fading.out).toBe(100)
++    })
++})
+diff --git a/packages/app/studio/src/ui/timeline/Crossfade.ts b/packages/app/studio/src/ui/timeline/Crossfade.ts
+new file mode 100644
+index 0000000..89ff983
+--- /dev/null
++++ b/packages/app/studio/src/ui/timeline/Crossfade.ts
+@@ -0,0 +1,148 @@
++import {ppqn, PPQN} from "@opendaw/lib-dsp"
++import {asInstanceOf, int, mod, UUID} from "@opendaw/lib-std"
++import {IndexedBox} from "@opendaw/lib-box"
++import {AnyRegionBoxAdapter, AudioRegionBoxAdapter, BoxAdapters, TrackBoxAdapter, TrackType} from "@opendaw/studio-adapters"
++import {AudioUnitBox, TrackBox} from "@opendaw/studio-boxes"
++
++/**
++ * X-F: a crossfade between two audio events that follow each other.
++ *
++ * Both events must be on the same audio unit, close together, and have sound to spare where they meet: the first
++ * one beyond its end, the second one before its start (the part that was trimmed away, or that a cut left on the
++ * other side). The first event is pulled out past the junction and fades out, the second is pulled back before it and
++ * fades in, over exactly the same stretch. For them to overlap, the second event moves to the next lane of the same
++ * audio unit (made once, and used again by every crossfade of this track).
++ *
++ * Does everything or nothing: when something is not right it says what and changes nothing. Call it inside an
++ * editing transaction.
++ */
++export namespace Crossfade {
++    /** The crossfade is at most this long (a sixteenth note), as much as the sound that is there allows. */
++    export const MaxLength: ppqn = PPQN.SemiQuaver
++    /** Less overlap than this is not a crossfade (a thirty-second of a sixteenth). */
++    export const MinLength: ppqn = 30
++    /** Further apart than this the events do not belong together. */
++    export const MaxGap: ppqn = PPQN.SemiQuaver
++
++    export type Result =
++        | { readonly ok: true, readonly length: ppqn, readonly movedToNextLane: boolean }
++        | { readonly ok: false, readonly reason: string }
++
++    const fail = (reason: string): Result => ({ok: false, reason})
++
++    const laneOf = (region: AudioRegionBoxAdapter): TrackBox =>
++        asInstanceOf(region.box.regions.targetVertex.unwrap("The event is on no lane").box, TrackBox)
++
++    const unitOf = (lane: TrackBox): AudioUnitBox =>
++        asInstanceOf(lane.tracks.targetVertex.unwrap("The lane is in no audio unit").box, AudioUnitBox)
++
++    const lanesOf = (unit: AudioUnitBox): ReadonlyArray<TrackBox> =>
++        unit.tracks.pointerHub.incoming()
++            .map(({box}) => asInstanceOf(box, TrackBox))
++            .filter(lane => lane.type.getValue() === TrackType.Audio)
++            .sort((a, b) => a.index.getValue() - b.index.getValue())
++
++    const regionsOnLane = (adapters: BoxAdapters, lane: TrackBox): ReadonlyArray<AnyRegionBoxAdapter> =>
++        adapters.adapterFor(lane, TrackBoxAdapter).regions.collection.asArray()
++
++    // does anything else lie in [from, to) on the lane?
++    const occupied = (adapters: BoxAdapters, lane: TrackBox, from: ppqn, to: ppqn,
++                      ignore: ReadonlyArray<AnyRegionBoxAdapter>): boolean =>
++        regionsOnLane(adapters, lane).some(region =>
++            !ignore.some(other => other.address.equals(region.address))
++            && region.position < to && region.complete > from)
++
++    export const apply = (adapters: BoxAdapters, selected: ReadonlyArray<AnyRegionBoxAdapter>): Result => {
++        if (selected.length !== 2) {return fail("Select two events that follow each other on the same track.")}
++        if (!selected[0].isAudioRegion() || !selected[1].isAudioRegion()) {return fail("X-F works on audio events.")}
++        const [first, second] = [selected[0], selected[1]]
++            .sort((a, b) => a.position - b.position || a.complete - b.complete)
++        const firstLane = laneOf(first)
++        const secondLane = laneOf(second)
++        const unit = unitOf(firstLane)
++        if (unitOf(secondLane) !== unit) {return fail("The two events are on different tracks.")}
++        const sameLane = firstLane === secondLane
++        const gap: ppqn = second.position - first.complete
++        if (gap < 0 && sameLane) {return fail("These events overlap on the same lane.")}
++        if (gap > MaxGap) {return fail("The events are too far apart for a crossfade.")}
++
++        // an overlap that is already there (from an earlier crossfade): only the fades are set to it
++        if (gap < 0) {
++            const overlap = Math.floor(-gap)
++            if (overlap < MinLength) {return fail("The events overlap by too little for a crossfade.")}
++            if (overlap > first.duration - first.fading.in || overlap > second.duration - second.fading.out) {
++                return fail("The overlap is longer than the events can fade.")
++            }
++            first.fading.outField.setValue(overlap)
++            second.fading.inField.setValue(overlap)
++            return {ok: true, length: overlap, movedToNextLane: false}
++        }
++
++        // The sound to spare: after the end of the first event, and before the start of the second one.
++        const tail = Math.max(0, first.loopDuration - (first.loopOffset + first.duration))
++        const head = Math.max(0, second.loopOffset)
++        const half = Math.min(MaxLength / 2, Math.min(tail, head) - gap / 2)
++        // whole ticks: the first event grows by ceil(gap/2) + half, the second by floor(gap/2) + half
++        const margin: int = Math.floor(half)
++        if (margin * 2 < MinLength) {return fail("There is not enough sound beyond the ends of these events to overlap.")}
++        const growFirst: int = Math.ceil(gap / 2) + margin
++        const growSecond: int = Math.floor(gap / 2) + margin
++        const length: ppqn = growFirst + growSecond - gap
++        if (length > first.duration + growFirst - first.fading.in
++            || length > second.duration + growSecond - second.fading.out) {
++            return fail("The events are too short for a crossfade this long.")
++        }
++
++        const newSecondPosition = second.position - growSecond
++        const newFirstComplete = first.complete + growFirst
++        // Which lane does the second event end up on? On the one below the first, or where it already is.
++        let target: TrackBox | null = secondLane
++        let createLaneAt: int = -1
++        if (sameLane) {
++            const lanes = lanesOf(unit)
++            const next = lanes[lanes.indexOf(firstLane) + 1]
++            if (next === undefined) {
++                target = null
++                createLaneAt = firstLane.index.getValue() + 1
++            } else {
++                target = next
++                if (occupied(adapters, next, newSecondPosition, second.complete, [second])) {
++                    return fail("The lane below is not free where the second event goes.")
++                }
++            }
++            if (occupied(adapters, firstLane, first.complete, newFirstComplete, [first, second])) {
++                return fail("Another event is in the way of the first event.")
++            }
++        } else {
++            if (occupied(adapters, firstLane, first.complete, newFirstComplete, [first, second])) {
++                return fail("Another event is in the way of the first event.")
++            }
++            if (occupied(adapters, secondLane, newSecondPosition, second.position, [first, second])) {
++                return fail("Another event is in the way of the second event.")
++            }
++        }
++
++        // Nothing is wrong: change things.
++        if (target === null) {
++            const index = IndexedBox.insertOrder(unit.tracks, createLaneAt)
++            target = TrackBox.create(unit.graph, UUID.generate(), box => {
++                box.type.setValue(TrackType.Audio)
++                box.index.setValue(index)
++                box.tracks.refer(unit.tracks)
++                box.target.refer(unit)
++            })
++        }
++        const moved = target !== secondLane
++        if (moved) {second.box.regions.refer(target.regions)}
++        // the first event is pulled out past the junction (what the end handle does)
++        first.duration = first.duration + growFirst
++        // the second event is pulled back before it (what the start handle does)
++        second.position = second.position - growSecond
++        second.duration = second.duration + growSecond
++        second.loopOffset = mod(second.loopOffset - growSecond, second.loopDuration)
++        // fading out over the same stretch as the other fades in
++        first.fading.outField.setValue(length)
++        second.fading.inField.setValue(length)
++        return {ok: true, length, movedToNextLane: moved}
++    }
++}
+diff --git a/packages/app/studio/src/ui/timeline/Timeline.tsx b/packages/app/studio/src/ui/timeline/Timeline.tsx
+index 85df6ec..267dceb 100644
+--- a/packages/app/studio/src/ui/timeline/Timeline.tsx
++++ b/packages/app/studio/src/ui/timeline/Timeline.tsx
+@@ -1,5 +1,5 @@
+ import css from "./Timeline.sass?inline"
+-import {Lifecycle} from "@opendaw/lib-std"
++import {Lifecycle, RuntimeNotifier} from "@opendaw/lib-std"
+ import {createElement, Inject} from "@opendaw/lib-jsx"
+ import {StudioService} from "@/service/StudioService"
+ import {TracksFooter} from "@/ui/timeline/tracks/footer/TracksFooter.tsx"
+@@ -13,7 +13,7 @@ import {deferNextFrame, Html} from "@opendaw/lib-dom"
+ import {TouchNavigation} from "@/ui/timeline/TouchNavigation"
+ import {TouchModifiers} from "@/ui/timeline/TouchModifiers"
+ import {TouchToolbar} from "@/ui/timeline/TouchToolbar"
+-import {connectRoom} from "@/service/StudioLiveRoomConnect"
++import {Crossfade} from "@/ui/timeline/Crossfade"
+ 
+ const className = Html.adoptStyleSheet(css, "Timeline")
+ 
+@@ -70,7 +70,12 @@ export const Timeline = ({lifecycle, service}: Construct) => {
+                     if (selected.length === 0) {return}
+                     editing.modify(() => selected.forEach(region => region.box.delete()))
+                 },
+-                live: () => void connectRoom(service)
++                crossfade: () => {
++                    const outcome = editing.modify(() => Crossfade.apply(project.boxAdapters, regionSelection.selected()))
++                    outcome.ifSome(result => {
++                        if (!result.ok) {void RuntimeNotifier.info({headline: "Crossfade", message: result.reason})}
++                    })
++                }
+             }
+         })
+         document.body.appendChild(toolbar)
+diff --git a/packages/app/studio/src/ui/timeline/TouchToolbar.sass b/packages/app/studio/src/ui/timeline/TouchToolbar.sass
+index f0154ea..cf69271 100644
+--- a/packages/app/studio/src/ui/timeline/TouchToolbar.sass
++++ b/packages/app/studio/src/ui/timeline/TouchToolbar.sass
+@@ -34,7 +34,7 @@ component
+     padding: 0 10px
+     border: none
+     border-radius: 9px
+-    font-size: 13px
++    font-size: 12px
+     color: rgba(white, 0.75)
+     background-color: transparent
+     outline: none
+diff --git a/packages/app/studio/src/ui/timeline/TouchToolbar.tsx b/packages/app/studio/src/ui/timeline/TouchToolbar.tsx
+index 88fca4b..4c8dfd0 100644
+--- a/packages/app/studio/src/ui/timeline/TouchToolbar.tsx
++++ b/packages/app/studio/src/ui/timeline/TouchToolbar.tsx
+@@ -21,8 +21,8 @@ export type TouchActions = {
+     paste: () => void
+     // removes the selected regions
+     remove: () => void
+-    // opens this project as a live room: others join it with a link
+-    live?: () => void
++    // crossfades the two selected events (see Crossfade)
++    crossfade?: () => void
+ }
+ 
+ type Construct = {
+@@ -52,8 +52,8 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
+     action("Copy", "Copy the selected regions to the clipboard", actions.copy, "action first")
+     action("Paste", "Paste at the play position", actions.paste, "action")
+     action("Delete", "Delete the selected regions", actions.remove, "action delete")
+-    if (actions.live !== undefined) {
+-        action("Live", "Open this project as a live room, to work on it together", actions.live, "action live")
++    if (actions.crossfade !== undefined) {
++        action("X-F", "Crossfade two events that follow each other: the second one moves to the lane below and both fade over the overlap", actions.crossfade, "action")
+     }
+ 
+     const update: HTMLElement = <button type="button" className="update" title="A new version is ready"
+diff --git a/packages/studio/core/src/cloud/EchoCloudHandler.ts b/packages/studio/core/src/cloud/EchoCloudHandler.ts
+index 679e5e4..6ceb3ac 100644
+--- a/packages/studio/core/src/cloud/EchoCloudHandler.ts
++++ b/packages/studio/core/src/cloud/EchoCloudHandler.ts
+@@ -1,6 +1,16 @@
+ import {Errors, panic, Progress} from "@opendaw/lib-std"
+ import {CloudHandler} from "./CloudHandler"
+ 
++// What the server counts in the bucket (see cloudflare-server/src/usage.ts)
++export type EchoUsage = {
++    freeBytes: number
++    total: { bytes: number, objects: number }
++    kinds: Record<"projects" | "samples" | "rooms" | "other", { bytes: number, objects: number }>
++    mine: { bytes: number, objects: number }
++    largest: Array<{ path: string, bytes: number }>
++    at: number
++}
++
+ export class EchoSessionExpired extends Error {
+     constructor() {super("Your login with the storage server ended. Sign in again.")}
+ }
+@@ -93,6 +103,13 @@ export class EchoCloudHandler implements CloudHandler {
+         this.#versions.delete(path)
+     }
+ 
++    // How much is stored, against the free 10 GB. fresh: count again now instead of reusing a count of the last minute.
++    async usage(fresh: boolean = false): Promise<EchoUsage> {
++        const response = await this.#send(`/usage${fresh ? "?fresh=1" : ""}`)
++        if (!response.ok) {return panic(`Echo usage failed: ${response.status} ${await response.text()}`)}
++        return response.json() as Promise<EchoUsage>
++    }
++
+     // Forget what this device knows about the version of a file, so that the next write does not check it. Only for
+     // when the person decided to replace the cloud copy.
+     forgetVersion(path: string): void {this.#versions.delete(path)}
