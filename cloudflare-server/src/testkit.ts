@@ -140,8 +140,16 @@ export const goodClaims = (nowSeconds: number, overrides: Record<string, unknown
     nonce: "n-123", email: "Me@Example.com", email_verified: true, sub: "1234567890", ...overrides
 })
 
+// the rooms and the go-between are tested on the real Workers runtime (integration/rooms.test.ts)
+const noRooms = {
+    idFromName: (name: string) => name,
+    get: () => ({fetch: async () => new Response("rooms are not available in this test", {status: 501})})
+}
+
 export const makeEnv = (signer: GoogleSigner, bucket: FakeBucket = new FakeBucket(), overrides: Partial<Env> = {}): Env => ({
     BUCKET: bucket,
+    ROOMS: noRooms,
+    SIGNALING: noRooms,
     GOOGLE_CLIENT_ID: ClientId,
     ALLOWED_EMAILS: "me@example.com, other@example.com",
     ALLOWED_ORIGINS: "https://echo-says-echo.pages.dev",

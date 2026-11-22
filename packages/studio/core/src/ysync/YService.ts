@@ -1,3 +1,4 @@
+import {RoomServer} from "./RoomServer"
 import {Errors, Option, panic, RuntimeNotifier, TimeSpan, UUID} from "@opendaw/lib-std"
 import {BoxGraph} from "@opendaw/lib-box"
 import {Promises} from "@opendaw/lib-runtime"
@@ -13,8 +14,6 @@ import {WebsocketProvider} from "y-websocket"
 export namespace YService {
     const USE_LOCAL_SERVER = false
     const LOCAL_SERVER_URL = "wss://localhost:1234"
-    const ONLINE_SERVER_URL = "wss://live.opendaw.studio"
-    const serverUrl = USE_LOCAL_SERVER ? LOCAL_SERVER_URL : ONLINE_SERVER_URL
 
     export type RoomResult = { project: Project, provider: WebsocketProvider }
 
@@ -23,7 +22,11 @@ export namespace YService {
                                           roomName: string): Promise<RoomResult> => {
         if (roomName === "signaling") {return panic("Invalid room name: signaling")}
         const doc = new Y.Doc()
-        const provider: WebsocketProvider = new WebsocketProvider(serverUrl, roomName, doc)
+        // the rooms of our own server need the login in the address (see RoomServer)
+        const token = RoomServer.token()
+        const provider: WebsocketProvider = new WebsocketProvider(
+            USE_LOCAL_SERVER ? LOCAL_SERVER_URL : RoomServer.url(), roomName, doc,
+            token === null ? undefined : {params: {token}})
         console.debug("clientID:", doc.clientID)
         console.debug("Provider url:", provider.url)
         if (!provider.synced) {

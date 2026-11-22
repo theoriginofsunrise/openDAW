@@ -13,6 +13,7 @@ import {deferNextFrame, Html} from "@opendaw/lib-dom"
 import {TouchNavigation} from "@/ui/timeline/TouchNavigation"
 import {TouchModifiers} from "@/ui/timeline/TouchModifiers"
 import {TouchToolbar} from "@/ui/timeline/TouchToolbar"
+import {connectRoom} from "@/service/StudioLiveRoomConnect"
 
 const className = Html.adoptStyleSheet(css, "Timeline")
 
@@ -68,7 +69,8 @@ export const Timeline = ({lifecycle, service}: Construct) => {
                     const selected = regionSelection.selected()
                     if (selected.length === 0) {return}
                     editing.modify(() => selected.forEach(region => region.box.delete()))
-                }
+                },
+                live: () => void connectRoom(service)
             }
         })
         document.body.appendChild(toolbar)

@@ -100,14 +100,14 @@ export const Header = ({lifecycle, service}: Construct) => {
                 <UndoRedoButtons lifecycle={lifecycle} service={service}/>
                 <hr/>
             </Group>
-            <div style={{display: "flex", columnGap: "4px"}}
+            <div className="midi-commands" style={{display: "flex", columnGap: "4px"}}
                  onInit={element => TourAnchors.register(lifecycle, element, "midi")}>
                 <MidiAccessButton lifecycle={lifecycle}/>
                 <CaptureMidiButton lifecycle={lifecycle} service={service}/>
             </div>
-            <hr/>
+            <hr className="after-midi"/>
             {transport}
-            <hr/>
+            <hr className="after-transport"/>
             {timecodes}
             <BaseFrequencyControl lifecycle={lifecycle} service={service}/>
             <hr/>
@@ -115,12 +115,12 @@ export const Header = ({lifecycle, service}: Construct) => {
                               service={service}
                               preferences={preferences}/>
             <hr/>
-            <div style={{flex: "1 0 0"}}/>
+            <div className="spacer" style={{flex: "1 0 0"}}/>
             {
                 location.origin.includes("dev.opendaw.studio")
                 && (<h5 style={{color: Colors.cream.toString()}}>DEV VERSION (UNSTABLE)</h5>)}
             <LocalLink href="/contests/2026" className="contest">Contest 2026</LocalLink>
-            <div style={{flex: "2 0 0"}}/>
+            <div className="spacer" style={{flex: "2 0 0"}}/>
             <HorizontalPeakMeter lifecycle={lifecycle} peaksInDb={peaksInDb} width="4em"/>
             <hr/>
             <div className="panel-selector" onInit={element => TourAnchors.register(lifecycle, element, "screens")}>

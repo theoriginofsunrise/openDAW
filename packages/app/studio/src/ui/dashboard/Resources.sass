@@ -6,11 +6,10 @@ component
   display: flex
   flex-direction: column
   row-gap: 0.5em
-  font-size: 11px
-
+  font-size: calc(11px * var(--dashboard-text, 1))
   h3
     padding-left: 0.25em
-    font-size: $fs-l
+    font-size: calc(#{$fs-l} * var(--dashboard-text, 1))
     border-radius: 0.25em
     width: fit-content
     white-space: nowrap

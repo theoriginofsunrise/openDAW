@@ -80,14 +80,18 @@ export const issueSession = async (env: Env, email: string, nowSeconds: number):
 export type Identity = { email: string, userId: string, expiresAt: number }
 
 // The person behind a request, or null. The email must still be on the allow list: removing it ends the access.
-export const authenticate = async (env: Env, request: Request, nowSeconds: number): Promise<Identity | null> => {
+export const authenticateToken = async (env: Env, token: string, nowSeconds: number): Promise<Identity | null> => {
     const secret = env.SESSION_SECRET
     if (secret === undefined || secret === "") {return null}
-    const header = request.headers.get("Authorization")
-    if (header === null || !header.startsWith("Bearer ")) {return null}
-    const claims = await verifySession(secret, header.slice("Bearer ".length).trim(), nowSeconds)
+    const claims = await verifySession(secret, token, nowSeconds)
     if (claims === null) {return null}
     const email = claims.sub.toLowerCase()
     if (!allowedEmails(env).includes(email)) {return null}
     return {email, userId: await userIdFor(email), expiresAt: claims.exp}
+}
+
+export const authenticate = async (env: Env, request: Request, nowSeconds: number): Promise<Identity | null> => {
+    const header = request.headers.get("Authorization")
+    if (header === null || !header.startsWith("Bearer ")) {return null}
+    return authenticateToken(env, header.slice("Bearer ".length).trim(), nowSeconds)
 }

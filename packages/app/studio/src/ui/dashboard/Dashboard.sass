@@ -27,7 +27,7 @@ component
     flex-direction: column
     align-items: center
     row-gap: 1em
-    font-size: clamp(0.625rem, min(2.25vw, calc(1rem + (100dvh - 850px) * 0.05)), 1rem)
+    font-size: calc(clamp(0.625rem, min(2.25vw, calc(1rem + (100dvh - 850px) * 0.05)), 1rem) * var(--dashboard-text, 1))
 
     > .hero
       display: flex
@@ -70,3 +70,8 @@ component
       row-gap: 0.5em
       min-width: 0
       align-content: start
+
+// A phone: the text of the dashboard 10% bigger (everything that sets its size reads --dashboard-text)
+@media (pointer: coarse)
+  component
+    --dashboard-text: 1.1

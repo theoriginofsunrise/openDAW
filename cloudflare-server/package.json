@@ -2,11 +2,22 @@
   "name": "echostudio-server",
   "private": true,
   "type": "module",
-  "version": "0.1.0",
-  "description": "EchoStudio storage server for Cloudflare Workers + R2. Deployed by .github/workflows/deploy-server.yml",
+  "version": "0.2.0",
+  "description": "EchoStudio storage and live room server for Cloudflare Workers + R2 + Durable Objects. Deployed by .github/workflows/deploy-server.yml",
   "scripts": {
     "dev": "npx wrangler@4 dev",
     "deploy": "npx wrangler@4 deploy",
     "test": "npx vitest run"
+  },
+  "dependencies": {
+    "lib0": "^0.2.114",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "vitest": "^3.0.0",
+    "y-websocket": "^1.5.0",
+    "ws": "^8.18.0"
   }
 }

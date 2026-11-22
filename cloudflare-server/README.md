@@ -1,6 +1,6 @@
-# EchoStudio storage server
+# EchoStudio server
 
-A small server on Cloudflare Workers that keeps the projects and audio of the app in an R2 bucket. The app signs in
+A small server on Cloudflare Workers that keeps the projects and audio of the app in an R2 bucket, and hosts the live rooms. The app signs in
 with Google, and only the emails on the allow list get in. Everybody has a private folder; nobody sees another folder.
 
 ## What it does
@@ -12,6 +12,11 @@ with Google, and only the emails on the allow list get in. Everybody has a priva
 | `GET/PUT/HEAD/DELETE /files/<path>` | a file (a folder for `HEAD` and `DELETE`: everything below it) |
 | `GET /list?path=<folder>` | names inside a folder |
 | `POST /mpu/create`, `PUT /mpu/part`, `POST /mpu/complete`, `POST /mpu/abort` | files above 95 MB go up in parts |
+| WebSocket `/<room>?token=...` | a live room: one Durable Object per room keeps the shared project while people are in it |
+| WebSocket `/signaling?token=...` | the go-between of the peer-to-peer connections (follow, calls, audio transfer) |
+
+Rooms need the same Google sign-in as the files, and the website's address must be in `ALLOWED_ORIGINS`. They are not stored:
+when everybody has left, the room is gone, and everybody keeps their own copy of the project.
 
 The shared catalog files (`index.json`, `tombstones.json`, `structure.json`) are only overwritten by a device that
 has read their latest version (`X-Echo-If-Match`), so two devices cannot wipe each other's changes.

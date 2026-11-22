@@ -1,4 +1,4 @@
-# Deploys the EchoStudio storage server (cloudflare-server/) to Cloudflare Workers. It runs when that folder changes,
+# Deploys the EchoStudio server (cloudflare-server/: storage, live rooms) to Cloudflare Workers. It runs when that folder changes,
 # and by hand from the Actions tab ("Run workflow").
 #
 # What it needs (repository settings, Settings > Secrets and variables > Actions):
@@ -49,6 +49,10 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 22
+
+      - name: Install the server's libraries (the live rooms use Yjs)
+        working-directory: cloudflare-server
+        run: npm ci --omit=dev
 
       - name: Deploy the server
         working-directory: cloudflare-server

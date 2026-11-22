@@ -1,6 +1,6 @@
 import {Env} from "./types"
-import {authenticate, issueSession, verifyGoogleIdToken} from "./auth"
-import {preflight, withCors} from "./cors"
+import {authenticate, authenticateToken, issueSession, verifyGoogleIdToken} from "./auth"
+import {allowedOrigin, preflight, withCors} from "./cors"
 import {
     cleanPath,
     deleteFile,
@@ -89,8 +89,38 @@ const route = async (request: Request, env: Env): Promise<Response> => {
     return json({error: "not_found"}, 404)
 }
 
+const MaxRoomNameLength = 120
+
+// A browser opens a WebSocket with the website's address in "Origin", and cannot send a header with the login: the
+// session token comes in the address (?token=...). Rooms and the peer-to-peer go-between need both.
+const socketRoute = async (request: Request, env: Env): Promise<Response> => {
+    const url = new URL(request.url)
+    const origin = request.headers.get("Origin")
+    if (origin !== null && allowedOrigin(env, origin) === null) {return new Response("Origin not allowed", {status: 403})}
+    const identity = await authenticateToken(env, url.searchParams.get("token") ?? "", Math.floor(Date.now() / 1000))
+    if (identity === null) {return new Response("Sign in first", {status: 401})}
+    if (url.pathname === "/signaling") {
+        return env.SIGNALING.get(env.SIGNALING.idFromName("everyone")).fetch(request)
+    }
+    let room: string
+    try {
+        room = decodeURIComponent(url.pathname.slice(1))
+    } catch (_error) {
+        return new Response("Bad room name", {status: 400})
+    }
+    if (room === "" || room === "signaling" || room.length > MaxRoomNameLength || /[\u0000-\u001f]/.test(room)) {
+        return new Response("Bad room name", {status: 400})
+    }
+    return env.ROOMS.get(env.ROOMS.idFromName(room)).fetch(request)
+}
+
+export {Room} from "./rooms"
+export {Signaling} from "./signaling"
+
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
+        // an upgrade answer carries the socket: it must go back untouched
+        if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {return socketRoute(request, env)}
         try {
             return withCors(await route(request, env), request, env)
         } catch (error) {

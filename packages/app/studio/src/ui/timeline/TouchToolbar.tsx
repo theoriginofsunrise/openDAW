@@ -21,6 +21,8 @@ export type TouchActions = {
     paste: () => void
     // removes the selected regions
     remove: () => void
+    // opens this project as a live room: others join it with a link
+    live?: () => void
 }
 
 type Construct = {
@@ -50,6 +52,9 @@ export const TouchToolbar = ({lifecycle, actions}: Construct) => {
     action("Copy", "Copy the selected regions to the clipboard", actions.copy, "action first")
     action("Paste", "Paste at the play position", actions.paste, "action")
     action("Delete", "Delete the selected regions", actions.remove, "action delete")
+    if (actions.live !== undefined) {
+        action("Live", "Open this project as a live room, to work on it together", actions.live, "action live")
+    }
 
     const update: HTMLElement = <button type="button" className="update" title="A new version is ready"
                                         onclick={() => {

@@ -1,3 +1,4 @@
+import {SocketAuthorizer} from "@/service/SocketAuthorizer"
 import {Func, isDefined, Nullable, Procedure, Terminable, tryCatch} from "@opendaw/lib-std"
 import {isObject} from "@/call/CallTypes"
 
@@ -57,7 +58,7 @@ export class RoomSignaling<T> implements Terminable {
     }
 
     #connect(): void {
-        const socket = new WebSocket(this.#url)
+        const socket = new WebSocket(SocketAuthorizer.authorize(this.#url))
         this.#socket = socket
         socket.onopen = () => {
             socket.send(JSON.stringify({type: "subscribe", topics: [this.#topic]}))

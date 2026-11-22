@@ -42,8 +42,21 @@ export interface R2Bucket {
     resumeMultipartUpload(key: string, uploadId: string): R2MultipartUpload
 }
 
+export interface DurableObjectStubLike {
+    fetch(request: Request): Promise<Response>
+}
+
+export interface DurableObjectNamespaceLike {
+    idFromName(name: string): unknown
+    get(id: unknown): DurableObjectStubLike
+}
+
 export interface Env {
     readonly BUCKET: R2Bucket
+    // one object per live room, holding the shared project while people are in it
+    readonly ROOMS: DurableObjectNamespaceLike
+    // one object that passes the messages of the peer-to-peer connections (follow, calls, audio transfer) around
+    readonly SIGNALING: DurableObjectNamespaceLike
     readonly GOOGLE_CLIENT_ID: string
     readonly ALLOWED_EMAILS: string
     readonly ALLOWED_ORIGINS: string

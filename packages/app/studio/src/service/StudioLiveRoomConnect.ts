@@ -1,6 +1,6 @@
 import {Errors, isDefined, Option, Optional, panic, Progress, RuntimeNotifier, Terminator, TimeSpan, UUID} from "@opendaw/lib-std"
 import {Promises, Wait} from "@opendaw/lib-runtime"
-import {SampleStorage, SoundfontStorage, WclapStorage, Workers, YService} from "@opendaw/studio-core"
+import {RoomServer, SampleStorage, SoundfontStorage, WclapStorage, Workers, YService} from "@opendaw/studio-core"
 import {P2PSession, type SignalingSocket} from "@opendaw/studio-p2p"
 import {StudioService} from "@/service/StudioService"
 import {showConnectRoomDialog} from "@/service/StudioLiveRoomDialog.tsx"
@@ -14,8 +14,6 @@ import {asFollowMessage, FollowMessage} from "@/follow/FollowTypes"
 import {RoomSignaling} from "@/service/RoomSignaling"
 import {Events} from "@opendaw/lib-dom"
 import {removeAwarenessStates} from "y-protocols/awareness"
-
-const LiveServerUrl = "wss://live.opendaw.studio"
 
 const classifyConnectError = (error: unknown): RoomResultStatus => {
     if (Errors.isAbort(error)) {return "abort"}
@@ -35,6 +33,15 @@ export const connectRoom = async (service: StudioService, prefillRoomName?: Opti
     if (result === null) {return}
     const {roomName, userName, userColor} = result
     writeIdentity(userName, userColor)
+    // The rooms of our own server are for people who signed in (a popup, which needs this tap)
+    if (RoomServer.ours()) {
+        const signedIn = await Promises.tryCatch(service.cloudAuthManager.getHandler("Echo"))
+        if (signedIn.status === "rejected") {
+            console.warn(signedIn.error)
+            RuntimeNotifier.notify({message: "Sign in with Google to use live rooms.", icon: "Warning"})
+            return
+        }
+    }
     const progressDialog = RuntimeNotifier.progress({
         headline: "Connecting to Room...",
         message: "Please wait while we connect to the room..."
@@ -59,7 +66,7 @@ export const connectRoom = async (service: StudioService, prefillRoomName?: Opti
             chainedSampleProvider: service.chainedSampleProvider,
             chainedSoundfontProvider: service.chainedSoundfontProvider,
             chainedWclapProvider: service.chainedWclapProvider,
-            createSocket: url => new WebSocket(url) as SignalingSocket,
+            createSocket: url => new WebSocket(RoomServer.authorize(url)) as SignalingSocket,
             localPeerId: UUID.toString(UUID.generate()),
             assetReader: {
                 hasSample: async uuid => {
@@ -88,7 +95,7 @@ export const connectRoom = async (service: StudioService, prefillRoomName?: Opti
                     .flatMap(profile => profile.coverId === UUID.toString(uuid) ? profile.cover : Option.None)
                     .unwrapOrElse(() => panic(`No cover for ${UUID.toString(uuid)}`))
             }
-        }, roomName, LiveServerUrl)
+        }, roomName, RoomServer.url())
         project.own(p2pSession)
         const terminator = new Terminator()
         project.own(terminator)
@@ -140,13 +147,13 @@ export const connectRoom = async (service: StudioService, prefillRoomName?: Opti
         terminator.own(chatService)
         service.chatService.wrap(chatService)
         terminator.own({terminate: () => service.chatService.clear()})
-        const callService = new CallService(service, provider.awareness, roomName, LiveServerUrl)
+        const callService = new CallService(service, provider.awareness, roomName, RoomServer.url())
         terminator.own(callService)
         service.callService.wrap(callService)
         terminator.own({terminate: () => service.callService.clear()})
         const followHost = terminator.own(new StudioFollowHost(service.audioContext, service.engine, project))
         const followService = new FollowService(provider.awareness, followHost, onMessage =>
-            new RoomSignaling<FollowMessage>(`${LiveServerUrl}/signaling`, `follow:${roomName}`,
+            new RoomSignaling<FollowMessage>(`${RoomServer.url()}/signaling`, `follow:${roomName}`,
                 asFollowMessage, onMessage, () => {}))
         terminator.own(followService)
         service.followService.wrap(followService)

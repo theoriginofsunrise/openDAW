@@ -10,6 +10,19 @@ workers_dev = true
 binding = "BUCKET"
 bucket_name = "echostudio-audio"
 
+# Live rooms: one Durable Object per room, and one for the peer-to-peer go-between
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[durable_objects.bindings]]
+name = "SIGNALING"
+class_name = "Signaling"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room", "Signaling"]
+
 [vars]
 # the Google OAuth client id of the app (same one the app uses to log in)
 GOOGLE_CLIENT_ID = ""

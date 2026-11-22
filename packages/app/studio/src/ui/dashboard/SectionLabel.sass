@@ -1,7 +1,7 @@
 @use "tokens" as *
 
 component
-  font-size: $fs-m
+  font-size: calc(#{$fs-m} * var(--dashboard-text, 1))
   text-transform: uppercase
   letter-spacing: 0.06em
   color: var(--color-cream)

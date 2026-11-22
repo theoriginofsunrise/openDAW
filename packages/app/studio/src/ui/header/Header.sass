@@ -74,3 +74,11 @@ component
     &::-webkit-scrollbar
       display: none
 
+    // A phone has no use for the help link (it leads to the manuals, which are not part of this app), for MIDI (it
+    // does not exist there), or for the contest button, and the groups close up: the screens come right after the
+    // metronome instead of being pushed to the far end, and the time display moves closer to the transport.
+    column-gap: 0.75em
+
+    a.manuals, a.contest, .midi-commands, hr.after-midi, hr.after-transport, .spacer
+      display: none
+

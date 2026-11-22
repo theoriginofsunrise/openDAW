@@ -9,7 +9,7 @@ component
   position: relative
 
   div.filter
-    font-size: 14px
+    font-size: calc(14px * var(--dashboard-text, 1))
     display: flex
     align-items: center
     height: 32px
@@ -18,7 +18,7 @@ component
     grid-column: 1 / -1
 
   div.content
-    font-size: 11px
+    font-size: calc(11px * var(--dashboard-text, 1))
     display: grid
     grid-template-columns: subgrid
     grid-column: 1 / -1

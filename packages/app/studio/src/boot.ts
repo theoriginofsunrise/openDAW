@@ -1,4 +1,5 @@
 import {EchoSync} from "@/EchoSync"
+import {SocketAuthorizer} from "@/service/SocketAuthorizer"
 import {AudioRecovery} from "@/AudioRecovery"
 import {CloudSafety} from "@/CloudSafety"
 import {PresenceService} from "@/PresenceService"
@@ -30,7 +31,7 @@ import {
     FactoryCatalog,
     GlobalSampleLoaderManager,
     GlobalSoundfontLoaderManager,
-    Workers, EchoSampleSource} from "@opendaw/studio-core"
+    Workers, EchoSampleSource, EchoSession, RoomServer} from "@opendaw/studio-core"
 import {OpenPresetAPI, OpenSampleAPI, OpenSoundfontAPI, WclapCatalog} from "@/opendaw-api"
 import {testFeatures} from "@/features.ts"
 import {MissingFeature} from "@/ui/MissingFeature.tsx"
@@ -169,6 +170,11 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
     AudioRecovery.install(context)
     CloudSafety.install(service)
     PresenceService.install(service, cloudAuthManager)
+    if (cloudAuthManager.echoEnabled) {
+        // live rooms (and the peer-to-peer go-between) are on our own server, for the people who signed in
+        RoomServer.configure(EchoServerUrl, () => EchoSession.read()?.token ?? null)
+        SocketAuthorizer.set(RoomServer.authorize)
+    }
     EchoSync.install(cloudAuthManager)
     const errorHandler = new ErrorHandler(buildInfo, () => service.recovery.createBackupCommand(),
         () => ReportNames.collectNames(service))

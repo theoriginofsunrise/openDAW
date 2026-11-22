@@ -1,4 +1,4 @@
-import {EmptyExec} from "@opendaw/lib-std"
+import {EmptyExec, RuntimeNotifier} from "@opendaw/lib-std"
 import {Browser, Files} from "@opendaw/lib-dom"
 import {RouteLocation} from "@opendaw/lib-jsx"
 import {Promises} from "@opendaw/lib-runtime"
@@ -9,6 +9,7 @@ import {GlobalShortcuts} from "@/ui/shortcuts/GlobalShortcuts"
 import {VideoRenderer} from "@/video/VideoRenderer"
 import {createDebugMenu} from "@/service/DebugMenu"
 import {connectRoom} from "@/service/StudioLiveRoomConnect"
+import {informationText} from "@/service/InformationText"
 import {NeuralDemux} from "@/service/NeuralDemux.tsx"
 import {NextcloudDialogs} from "@/project/NextcloudDialogs"
 import {openManual} from "@/ui/manuals"
@@ -98,6 +99,11 @@ export const populateStudioMenu = (service: StudioService) => {
                         separatorBefore: true
                     }).setTriggerProcedure(() => connectRoom(service)),
                     MenuItem.default({
+                        label: "Open Project as Live Room...",
+                        icon: IconSymbol.Connected,
+                        selectable: service.hasProfile
+                    }).setTriggerProcedure(() => connectRoom(service)),
+                    MenuItem.default({
                         label: "Show MIDI-Keyboard",
                         icon: IconSymbol.Piano,
                         separatorBefore: true,
@@ -160,6 +166,21 @@ export const populateStudioMenu = (service: StudioService) => {
                         label: "Statistics",
                         icon: IconSymbol.Charts
                     }).setTriggerProcedure(() => RouteLocation.get().navigateTo("/stats")),
+                    MenuItem.default({
+                        label: "Information...",
+                        icon: IconSymbol.Info
+                    }).setTriggerProcedure(() => void RuntimeNotifier.info({
+                        headline: "Information",
+                        message: informationText({
+                            online: navigator.onLine,
+                            project: service.hasProfile ? service.profile.meta.name : null,
+                            sampleRate: service.audioContext.sampleRate,
+                            outputLatency: service.audioContext.outputLatency,
+                            build: service.buildInfo.uuid.slice(0, 6),
+                            buildTime: new Date(service.buildInfo.date).getTime(),
+                            signedInAs: service.cloudAuthManager.echoEnabled ? service.cloudAuthManager.echoEmail ?? "" : null
+                        })
+                    })),
                     createDebugMenu(service)
                 )
             }
