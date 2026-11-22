@@ -1,7 +1,8 @@
-// Writes <dist>/precache.json: the list of files the service worker downloads on install,
-// so that the app starts without a network. Usage: node scripts/write-precache.mjs <dist folder>
-import {readdirSync, statSync, writeFileSync} from "node:fs"
+// Writes <dist>/precache.json (the list of files the service worker keeps, so that the app starts without a network)
+// and <dist>/precache-critical.json (the few it must have before it can take over). Usage: node scripts/write-precache.mjs <dist folder>
+import {readdirSync, readFileSync, statSync, writeFileSync} from "node:fs"
 import {join, relative, sep} from "node:path"
+import {criticalFiles} from "./precache-lists.mjs"
 
 const root = process.argv[2]
 if (root === undefined) {
@@ -33,4 +34,7 @@ walk(root)
 // "/" is the app shell (index.html as the server serves it)
 const urls = ["/", ...files.sort()]
 writeFileSync(join(root, "precache.json"), JSON.stringify(urls))
-console.log(`${urls.length} files in the offline list`)
+// the few files the start needs: the service worker takes over once these are downloaded (see public/sw.js)
+const critical = criticalFiles(readFileSync(join(root, "index.html"), "utf8"), urls)
+writeFileSync(join(root, "precache-critical.json"), JSON.stringify(critical))
+console.log(`${urls.length} files in the offline list, ${critical.length} of them needed to start`)

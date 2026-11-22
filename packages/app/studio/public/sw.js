@@ -3,20 +3,27 @@
 const BUILD = "__BUILD__"
 const CACHE = `opendaw-${BUILD}`
 
-// Download the whole app once (the list is written at build time), so the first offline launch works.
-// A file that fails to download must never abort the install.
-const precache = async () => {
-    let urls
+let listTotal = 0
+let backgroundStarted = false
+
+const listOf = async name => {
     try {
-        urls = await (await fetch("/precache.json", {cache: "no-store"})).json()
+        const response = await fetch(name, {cache: "no-store"})
+        return response.ok ? await response.json() : null
     } catch (error) {
-        return // no list (or no network): fall back to caching what gets used
+        return null
     }
+}
+
+// Downloads files into this build's cache, skipping what is there. A file that fails never aborts the rest: it is
+// fetched on demand later.
+const download = async (urls, concurrency) => {
     const cache = await caches.open(CACHE)
     const queue = [...urls]
     const worker = async () => {
         for (let url = queue.shift(); url !== undefined; url = queue.shift()) {
             try {
+                if (await cache.match(url) !== undefined) {continue}
                 const response = await fetch(url, {cache: "reload"})
                 if (response.ok && response.type === "basic" && !response.redirected) {await cache.put(url, response)}
             } catch (error) {
@@ -24,18 +31,58 @@ const precache = async () => {
             }
         }
     }
-    await Promise.all(Array.from({length: 6}, worker))
+    await Promise.all(Array.from({length: concurrency}, worker))
 }
 
-// A new version takes over as soon as it has been downloaded. It used to wait for "the next launch", but on an
-// iPhone the app is mostly resumed and not launched again, so the new version waited for ever and the "new version,
-// please reload" dialog kept bringing back the old one. The open page keeps running the version it started with; the
-// reload that the dialog asks for then loads the new one.
-self.addEventListener("install", event => event.waitUntil(precache().then(() => self.skipWaiting())))
+// Only what the start needs, so that a new version takes over within moments, also on a phone network. (It used to
+// download the whole offline copy first, tens of megabytes: a phone could be interrupted halfway and start again.)
+const installCritical = async () => {
+    const critical = await listOf("/precache-critical.json")
+    if (critical !== null) {
+        await download(critical, 6)
+        return
+    }
+    // a build without the short list: everything, as before
+    const all = await listOf("/precache.json")
+    if (all !== null) {
+        listTotal = all.length
+        await download(all, 6)
+    }
+}
 
-// The page asks for the new build to take over right away (see AppUpdate.ts)
+// The rest of the offline copy, once the app is running and has what it needs: gently, three at a time.
+const downloadTheRest = async () => {
+    await new Promise(resolve => setTimeout(resolve, 10_000))
+    const all = await listOf("/precache.json")
+    if (all === null) {return}
+    listTotal = all.length
+    await download(all, 3)
+}
+
+// A new version takes over as soon as its first files are there. The open page keeps running the version it started
+// with; the reload that the "new version" dialog asks for then loads the new one.
+self.addEventListener("install", event => event.waitUntil(installCritical().then(() => self.skipWaiting())))
+
 self.addEventListener("message", event => {
-    if (event.data === "skip-waiting") {self.skipWaiting()}
+    const data = event.data
+    // the page asks for the new build to take over right away (see AppUpdate.ts)
+    if (data === "skip-waiting") {
+        self.skipWaiting()
+        return
+    }
+    // the page asks how far the offline copy is (the Information window)
+    if (data !== null && typeof data === "object" && data.type === "status" && event.ports !== undefined && event.ports[0] !== undefined) {
+        const port = event.ports[0]
+        event.waitUntil((async () => {
+            const cache = await caches.open(CACHE)
+            const cached = (await cache.keys()).length
+            if (listTotal === 0) {
+                const all = await listOf("/precache.json")
+                listTotal = all === null ? 0 : all.length
+            }
+            port.postMessage({build: BUILD, cached, total: listTotal})
+        })())
+    }
 })
 
 self.addEventListener("activate", event => event.waitUntil((async () => {
@@ -78,6 +125,10 @@ self.addEventListener("fetch", event => {
     if (url.origin !== self.location.origin) {return} // samples, soundfonts, cloud APIs: network only
     if (url.pathname.startsWith("/wclap")) {return} // plugin frame has its own worker and scope
     if (url.pathname.startsWith("/od-")) {return} // proxied samples, soundfonts, models: network only
-    if (url.pathname === "/sw.js" || url.pathname === "/precache.json") {return}
+    if (url.pathname === "/sw.js" || url.pathname === "/precache.json" || url.pathname === "/precache-critical.json") {return}
+    if (!backgroundStarted) {
+        backgroundStarted = true
+        event.waitUntil(downloadTheRest())
+    }
     event.respondWith(cacheFirst(request))
 })

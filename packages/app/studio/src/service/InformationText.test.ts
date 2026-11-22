@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest"
-import {informationText} from "./InformationText"
+import {informationText, offlineLine} from "./InformationText"
 
 const base = {
     online: true, project: "My Song", sampleRate: 48000, outputLatency: 0.0179, build: "a682a6",
@@ -35,5 +35,38 @@ describe("informationText", () => {
 
     it("shows a rate that is not a whole number of kilohertz", () => {
         expect(informationText({...base, sampleRate: 44100})).toContain("Sample rate: 44.1 kHz")
+    })
+})
+
+describe("offlineLine", () => {
+    const build = "a682a6"
+    const full = "a682a6ff-0000-1111-2222-333333333333"
+
+    it("says nothing when the app did not ask", () => {
+        expect(offlineLine(undefined, build)).toBeNull()
+    })
+
+    it("says there is none, when no service worker answers", () => {
+        expect(offlineLine(null, build)).toContain("none")
+    })
+
+    it("tells how far the download is, and when it is complete", () => {
+        expect(offlineLine({build: full, cached: 40, total: 300}, build)).toBe("Offline copy: coming in, 40 of 300 files")
+        expect(offlineLine({build: full, cached: 300, total: 300}, build)).toBe("Offline copy: complete, 300 files")
+        expect(offlineLine({build: full, cached: 12, total: 0}, build)).toBe("Offline copy: complete")
+    })
+
+    it("tells when the copy belongs to another build than the page that is open", () => {
+        const line = offlineLine({build: "bbbbbbff-0000", cached: 300, total: 300}, build)
+        expect(line).toContain("another build (bbbbbb)")
+        expect(line).toContain("Reload")
+    })
+
+    it("goes into the Information text", () => {
+        const text = informationText({
+            online: true, project: null, sampleRate: 48000, outputLatency: 0, build, buildTime: Number.NaN,
+            signedInAs: null, offline: {build: full, cached: 10, total: 20}
+        })
+        expect(text).toContain("Offline copy: coming in, 10 of 20 files")
     })
 })

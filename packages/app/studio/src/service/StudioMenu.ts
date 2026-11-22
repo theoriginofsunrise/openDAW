@@ -10,6 +10,7 @@ import {VideoRenderer} from "@/video/VideoRenderer"
 import {createDebugMenu} from "@/service/DebugMenu"
 import {connectRoom} from "@/service/StudioLiveRoomConnect"
 import {informationText} from "@/service/InformationText"
+import {OfflineStatus} from "@/OfflineStatus"
 import {NeuralDemux} from "@/service/NeuralDemux.tsx"
 import {NextcloudDialogs} from "@/project/NextcloudDialogs"
 import {openManual} from "@/ui/manuals"
@@ -169,18 +170,22 @@ export const populateStudioMenu = (service: StudioService) => {
                     MenuItem.default({
                         label: "Information...",
                         icon: IconSymbol.Info
-                    }).setTriggerProcedure(() => void RuntimeNotifier.info({
-                        headline: "Information",
-                        message: informationText({
-                            online: navigator.onLine,
-                            project: service.hasProfile ? service.profile.meta.name : null,
-                            sampleRate: service.audioContext.sampleRate,
-                            outputLatency: service.audioContext.outputLatency,
-                            build: service.buildInfo.uuid.slice(0, 6),
-                            buildTime: new Date(service.buildInfo.date).getTime(),
-                            signedInAs: service.cloudAuthManager.echoEnabled ? service.cloudAuthManager.echoEmail ?? "" : null
+                    }).setTriggerProcedure(async () => {
+                        const offline = await OfflineStatus.read()
+                        await RuntimeNotifier.info({
+                            headline: "Information",
+                            message: informationText({
+                                online: navigator.onLine,
+                                project: service.hasProfile ? service.profile.meta.name : null,
+                                sampleRate: service.audioContext.sampleRate,
+                                outputLatency: service.audioContext.outputLatency,
+                                build: service.buildInfo.uuid.slice(0, 6),
+                                buildTime: new Date(service.buildInfo.date).getTime(),
+                                signedInAs: service.cloudAuthManager.echoEnabled ? service.cloudAuthManager.echoEmail ?? "" : null,
+                                offline
+                            })
                         })
-                    })),
+                    }),
                     createDebugMenu(service)
                 )
             }
